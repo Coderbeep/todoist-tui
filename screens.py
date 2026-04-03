@@ -347,19 +347,19 @@ class LabelManagerScreen(ModalScreen[LabelMutationRequest | None]):
         self.dismiss(None)
 
     def action_add_label(self) -> None:
-        self.push_screen(LabelEditorScreen(None), self._finish_add_label)
+        self.app.push_screen(LabelEditorScreen(None), self._finish_add_label)
 
     def action_edit_label(self) -> None:
         label = self.current_label
         if label is None:
             return
-        self.push_screen(LabelEditorScreen(label), self._finish_edit_label)
+        self.app.push_screen(LabelEditorScreen(label), self._finish_edit_label)
 
     def action_delete_label(self) -> None:
         label = self.current_label
         if label is None:
             return
-        self.push_screen(
+        self.app.push_screen(
             ConfirmScreen(
                 "Delete label",
                 f"Delete label '{label.name}'? Todoist removes it from tasks too.",
