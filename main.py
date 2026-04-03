@@ -167,10 +167,10 @@ class TodoistKanbanApp(App[None]):
     BORDER_STYLE = ui.ACCENT_BORDER
 
     BINDINGS = [
-        Binding("left,h", "previous_group", "Prev Group"),
-        Binding("right,l", "next_group", "Next Group"),
-        Binding("up,k", "previous_task", "Prev Task"),
-        Binding("down,j", "next_task", "Next Task"),
+        Binding("left,h", "previous_group", "Prev Group", key_display="←/h"),
+        Binding("right,l", "next_group", "Next Group", key_display="→/l"),
+        Binding("up,k", "previous_task", "Prev Task", key_display="↑/k"),
+        Binding("down,j", "next_task", "Next Task", key_display="↓/j"),
         Binding("n", "new_task", "Add"),
         Binding("e", "edit_task", "Edit"),
         Binding("space", "complete_task", "Complete"),
@@ -271,13 +271,13 @@ class TodoistKanbanApp(App[None]):
         if self.selection.task_index == 0:
             return
         self.selection.task_index -= 1
-        self._refresh_ui()
+        self._refresh_task_views()
 
     def action_next_task(self) -> None:
         if self.selection.task_index >= len(self.selected_group.tasks) - 1:
             return
         self.selection.task_index += 1
-        self._refresh_ui()
+        self._refresh_task_views()
 
     def action_new_task(self) -> None:
         if self.busy or self.inbox_project_id is None:
@@ -611,11 +611,18 @@ class TodoistKanbanApp(App[None]):
         task_panel.border_title = self._task_panel_title(selected_group)
         task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
         task_panel.styles.border = ("round", ui.ACCENT_BORDER)
-        task_panel.update(self._build_task_panel())
-        self.query_one("#detail-panel", Static).update(self._build_detail_panel())
-        self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
+        self._refresh_task_views()
         self.query_one("#status", Static).update(self._build_status_bar())
         self._update_group_buttons()
+
+    def _refresh_task_views(self) -> None:
+        if not self.is_mounted:
+            return
+
+        self._clamp_selection()
+        self.query_one("#task-panel", Static).update(self._build_task_panel())
+        self.query_one("#detail-panel", Static).update(self._build_detail_panel())
+        self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
 
     def _update_group_buttons(self) -> None:
         for index, group in enumerate(self.groups):

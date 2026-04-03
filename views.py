@@ -164,28 +164,33 @@ def build_task_card(
     subtle_text_style: str,
     border_style: str,
 ) -> RenderableType:
+    card_border = ui.ACTIVE_TASK_BORDER if selected else ui.INACTIVE_TASK_BORDER
+    card_title = "ACTIVE" if selected else "TASK"
+    card_style = f"on {ui.ACTIVE_ROW_BG}" if selected else ""
+    meta_style = ui.ACTIVE_TASK_BORDER if selected else border_style
+
     meta = Text(justify="right")
     if task.due:
         meta.append(f"due {task.due.string}", style=ui.ACCENT_SOFT)
     if task.labels:
         if meta:
-            meta.append("  ", style=border_style)
+            meta.append("  ", style=meta_style)
         visible_labels = task.labels[:3]
         for index, label in enumerate(visible_labels):
             if index:
-                meta.append(" ", style=border_style)
+                meta.append(" ", style=meta_style)
             meta.append(f"@{label}", style=label_name_colors.get(label.casefold(), ui.TEXT_MUTED))
         if len(task.labels) > 3:
-            meta.append(f" +{len(task.labels) - 3}", style=border_style)
+            meta.append(f" +{len(task.labels) - 3}", style=meta_style)
     if not meta:
-        meta = Text("No extra metadata", style=border_style)
+        meta = Text("No extra metadata", style=meta_style)
 
     summary = Table.grid(expand=True)
     summary.add_column(ratio=1)
     summary.add_column(no_wrap=True, justify="right")
     summary.add_row(
         Text(task.content, style=selected_text_style if selected else body_text_style),
-        Text(task.id, style=border_style),
+        Text(task.id, style=meta_style),
     )
     if task.description:
         summary.add_row(
@@ -199,8 +204,9 @@ def build_task_card(
 
     return Panel(
         Group(*body_items),
-        border_style=ui.ACTIVE_TASK_BORDER if selected else ui.INACTIVE_TASK_BORDER,
-        title="TASK",
+        border_style=card_border,
+        style=card_style,
+        title=card_title,
     )
 
 
