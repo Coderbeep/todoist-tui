@@ -87,13 +87,17 @@ class TodoistGateway:
         self.due_lang = due_lang
         self.client = httpx.Client()
         self.api = TodoistAPI(token, client=self.client)
+        self._inbox_project = None
 
     def close(self) -> None:
         self.client.close()
 
     def load_snapshot(self) -> TodoistSnapshot:
-        projects = flatten_pages(self.api.get_projects(limit=200))
-        inbox = next((project for project in projects if project.is_inbox_project), None)
+        inbox = self._inbox_project
+        if inbox is None:
+            projects = flatten_pages(self.api.get_projects(limit=200))
+            inbox = next((project for project in projects if project.is_inbox_project), None)
+            self._inbox_project = inbox
         if inbox is None:
             raise RuntimeError("Todoist Inbox project could not be found.")
 
@@ -172,7 +176,7 @@ class TodoistKanbanApp(App[None]):
         Binding("up,k", "previous_task", "Prev Task", key_display="↑/k"),
         Binding("down,j", "next_task", "Next Task", key_display="↓/j"),
         Binding("n", "new_task", "Add"),
-        Binding("e", "edit_task", "Edit"),
+        Binding("e,enter", "edit_task", "Edit", key_display="e/Enter"),
         Binding("space", "complete_task", "Complete"),
         Binding("x", "delete_task", "Delete"),
         Binding("L", "manage_labels", "Labels", key_display="Shift+L"),
@@ -192,6 +196,7 @@ class TodoistKanbanApp(App[None]):
         self.labels: list[TodoistLabel] = []
         self.task_lookup: dict[str, Task] = {}
         self.label_lookup: dict[str, TodoistLabel] = {}
+        self.label_name_lookup: dict[str, str] = {}
         self.label_name_colors: dict[str, str] = {}
         self.groups: list[LabelGroup] = []
         self.selection = SelectionState()
@@ -251,21 +256,21 @@ class TodoistKanbanApp(App[None]):
         if group_key is None:
             return
         self._select_group_by_key(group_key)
-        self._refresh_ui()
+        self._refresh_group_and_task_views()
 
     def action_previous_group(self) -> None:
         if self.selection.group_index == 0:
             return
         self.selection.group_index -= 1
         self._clamp_selection()
-        self._refresh_ui()
+        self._refresh_group_and_task_views()
 
     def action_next_group(self) -> None:
         if self.selection.group_index >= len(self.groups) - 1:
             return
         self.selection.group_index += 1
         self._clamp_selection()
-        self._refresh_ui()
+        self._refresh_group_and_task_views()
 
     def action_previous_task(self) -> None:
         if self.selection.task_index == 0:
@@ -331,28 +336,28 @@ class TodoistKanbanApp(App[None]):
     def _finish_new_task(self, form: TaskFormData | None) -> None:
         if form is None or self.inbox_project_id is None:
             self.status = "Task creation cancelled."
-            self._refresh_ui()
+            self._refresh_status()
             return
 
         self._run_task_mutation(
             "Creating task in Inbox...",
             lambda: self.gateway.create_task(self.inbox_project_id or "", form),
             message="Task saved to Inbox.",
-            group_key=self._group_key_for_labels(form.labels),
+            group_key=self._preferred_task_group_key(form.labels),
         )
 
     def _finish_edit_task(self, form: TaskFormData | None) -> None:
         task = self.selected_task
         if form is None or task is None:
             self.status = "Task edit cancelled."
-            self._refresh_ui()
+            self._refresh_status()
             return
 
         self._run_task_mutation(
             "Updating task...",
             lambda: self.gateway.update_task(task, form),
             message="Task updated.",
-            group_key=self._group_key_for_labels(form.labels),
+            group_key=self._preferred_task_group_key(form.labels),
         )
 
     def _complete_task(self, task_id: str) -> None:
@@ -374,7 +379,7 @@ class TodoistKanbanApp(App[None]):
     def _finish_label_request(self, request: LabelMutationRequest | None) -> None:
         if request is None:
             self.status = "Label manager closed."
-            self._refresh_ui()
+            self._refresh_status()
             return
 
         if request.action == "create" and request.form is not None:
@@ -479,7 +484,7 @@ class TodoistKanbanApp(App[None]):
                 severity="information",
                 markup=False,
             )
-            self._refresh_ui()
+            self._refresh_status()
         except Exception as error:
             self._handle_error("Todoist request failed.", error)
         finally:
@@ -498,6 +503,9 @@ class TodoistKanbanApp(App[None]):
         self.labels = snapshot.labels
         self.task_lookup = {task.id: task for task in self.tasks}
         self.label_lookup = {label.id: label for label in self.labels}
+        self.label_name_lookup = {
+            label.name.casefold(): label.id for label in self.labels
+        }
         self.label_name_colors = {
             label.name.casefold(): ui.COLOR_HEX_BY_NAME.get(label.color, ui.TEXT_MUTED)
             for label in self.labels
@@ -507,7 +515,7 @@ class TodoistKanbanApp(App[None]):
         desired_task_id = selected_task_id or self.selection.current_task_id
 
         self.groups = build_label_groups(self.tasks, self.labels)
-        self._rebuild_group_strip()
+        await self._sync_group_strip()
         self._select_group_by_key(desired_group_key)
         self._select_task_by_id(desired_task_id)
         self.sub_title = (
@@ -523,21 +531,35 @@ class TodoistKanbanApp(App[None]):
         self.busy = busy
         if message is not None:
             self.status = message
-        self._refresh_ui()
+        self._refresh_header()
+        self._refresh_status()
 
     def _handle_error(self, title: str, error: Exception) -> None:
         message = format_error(error)
         self.status = message
         self.notify(message, title=title, severity="error", markup=False)
-        self._refresh_ui()
+        self._refresh_status()
 
-    def _group_key_for_labels(self, label_names: list[str]) -> str:
-        if label_names:
-            normalized = {name.casefold() for name in label_names}
-            for label in self.labels:
-                if label.name.casefold() in normalized:
-                    return f"label:{label.id}"
-        return "all"
+    def _preferred_task_group_key(self, label_names: list[str]) -> str:
+        normalized = {name.casefold() for name in label_names}
+        current_group_key = self.selection.current_group_key
+
+        if current_group_key == "all":
+            return "all"
+        if current_group_key == "unlabeled" and not normalized:
+            return "unlabeled"
+        if current_group_key.startswith("label:"):
+            label_id = current_group_key.partition(":")[2]
+            current_label = self.label_lookup.get(label_id)
+            if current_label is not None and current_label.name.casefold() in normalized:
+                return current_group_key
+
+        for label_name in label_names:
+            label_id = self.label_name_lookup.get(label_name.casefold())
+            if label_id is not None:
+                return f"label:{label_id}"
+
+        return "unlabeled" if not normalized else "all"
 
     def _clamp_selection(self) -> None:
         if not self.groups:
@@ -581,39 +603,51 @@ class TodoistKanbanApp(App[None]):
                 return
         self._clamp_selection()
 
-    def _rebuild_group_strip(self) -> None:
+    async def _sync_group_strip(self) -> None:
         strip = self.query_one("#group-strip", Horizontal)
-        strip.remove_children()
-        self._group_buttons = {}
-        buttons: list[Button] = []
+        desired_keys = [group.key for group in self.groups]
+
+        obsolete_keys = [key for key in self._group_buttons if key not in desired_keys]
+        if obsolete_keys:
+            await strip.remove_children(
+                [
+                    self._group_buttons[key]
+                    for key in obsolete_keys
+                    if self._group_buttons[key].parent is strip
+                ]
+            )
+            for key in obsolete_keys:
+                self._group_buttons.pop(key, None)
+
         for group in self.groups:
-            button = Button(group_label(group), classes="group-chip")
-            self._group_buttons[group.key] = button
-            buttons.append(button)
-        if buttons:
-            strip.mount_all(buttons)
+            if group.key not in self._group_buttons:
+                button = Button(group_label(group), classes="group-chip")
+                self._group_buttons[group.key] = button
+                await strip.mount(button)
+
+        current_keys = [
+            key
+            for child in strip.children
+            for key, button in self._group_buttons.items()
+            if button is child
+        ]
+        if current_keys != desired_keys and desired_keys:
+            for index, group_key in enumerate(desired_keys):
+                button = self._group_buttons[group_key]
+                if index == 0:
+                    strip.move_child(button, before=0)
+                    continue
+                strip.move_child(button, after=self._group_buttons[desired_keys[index - 1]])
+
         self._update_group_buttons()
 
     def _refresh_ui(self) -> None:
         if not self.is_mounted:
             return
-        self._clamp_selection()
-        selected_group = self.selected_group
-        self.query_one("#workspace-header", Static).update(
-            build_workspace_header(
-                self.inbox_name,
-                len(self.tasks),
-                len(self.labels),
-                busy=self.busy,
-            )
-        )
-        task_panel = self.query_one("#task-panel", Static)
-        task_panel.border_title = self._task_panel_title(selected_group)
-        task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
-        task_panel.styles.border = ("round", ui.ACCENT_BORDER)
+        self._refresh_header()
+        self._refresh_group_context()
         self._refresh_task_views()
-        self.query_one("#status", Static).update(self._build_status_bar())
-        self._update_group_buttons()
+        self._refresh_status()
 
     def _refresh_task_views(self) -> None:
         if not self.is_mounted:
@@ -623,6 +657,40 @@ class TodoistKanbanApp(App[None]):
         self.query_one("#task-panel", Static).update(self._build_task_panel())
         self.query_one("#detail-panel", Static).update(self._build_detail_panel())
         self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
+
+    def _refresh_group_and_task_views(self) -> None:
+        if not self.is_mounted:
+            return
+        self._refresh_group_context()
+        self._refresh_task_views()
+
+    def _refresh_group_context(self) -> None:
+        if not self.is_mounted:
+            return
+        self._clamp_selection()
+        selected_group = self.selected_group
+        task_panel = self.query_one("#task-panel", Static)
+        task_panel.border_title = self._task_panel_title(selected_group)
+        task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
+        task_panel.styles.border = ("round", ui.ACCENT_BORDER)
+        self._update_group_buttons()
+
+    def _refresh_header(self) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one("#workspace-header", Static).update(
+            build_workspace_header(
+                self.inbox_name,
+                len(self.tasks),
+                len(self.labels),
+                busy=self.busy,
+            )
+        )
+
+    def _refresh_status(self) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one("#status", Static).update(self._build_status_bar())
 
     def _update_group_buttons(self) -> None:
         for index, group in enumerate(self.groups):

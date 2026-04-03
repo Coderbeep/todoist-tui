@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Iterable, TypeVar
 
 import httpx
@@ -95,6 +96,16 @@ def task_window(task_count: int, selected_index: int, capacity: int) -> tuple[in
 
 
 def build_label_groups(tasks: list[Task], labels: list[TodoistLabel]) -> list[LabelGroup]:
+    unlabeled_tasks: list[Task] = []
+    tasks_by_label: defaultdict[str, list[Task]] = defaultdict(list)
+    for task in tasks:
+        task_labels = task.labels or []
+        if not task_labels:
+            unlabeled_tasks.append(task)
+            continue
+        for task_label in task_labels:
+            tasks_by_label[task_label.casefold()].append(task)
+
     groups: list[LabelGroup] = [
         LabelGroup(
             key="all",
@@ -107,7 +118,7 @@ def build_label_groups(tasks: list[Task], labels: list[TodoistLabel]) -> list[La
             key="unlabeled",
             title="No Label",
             accent=ui.INACTIVE_TASK_BORDER,
-            tasks=[task for task in tasks if not task.labels],
+            tasks=unlabeled_tasks,
             help_text="Tasks without labels. Good for triage and cleanup.",
         ),
     ]
@@ -118,11 +129,7 @@ def build_label_groups(tasks: list[Task], labels: list[TodoistLabel]) -> list[La
                 key=f"label:{label.id}",
                 title=label.name,
                 accent=ui.COLOR_HEX_BY_NAME.get(label.color, ui.ACCENT_PRIMARY),
-                tasks=[
-                    task
-                    for task in tasks
-                    if any(task_label.casefold() == label.name.casefold() for task_label in (task.labels or []))
-                ],
+                tasks=list(tasks_by_label.get(label.name.casefold(), [])),
                 help_text=(
                     f"Tasks tagged with @{label.name}. "
                     f"Label color: {humanize_color_name(label.color)}."
