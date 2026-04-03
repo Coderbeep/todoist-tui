@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from rich.console import RenderableType
+from rich.text import Text
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea
 from todoist_api_python.models import Label as TodoistLabel
 from todoist_api_python.models import Task
@@ -15,12 +18,47 @@ from app_utils import compact_text, parse_label_names
 from views import build_label_manager_rows
 
 
+class LabelSuggester(Suggester):
+    def __init__(self, labels: list[str]) -> None:
+        super().__init__(case_sensitive=True)
+        self.labels = labels
+
+    async def get_suggestion(self, value: str) -> str | None:
+        prefix, fragment = split_label_input(value)
+        fragment_text = fragment.strip()
+        if not fragment_text:
+            return None
+
+        normalized_fragment = fragment_text.casefold()
+        normalized_selected = {
+            label.casefold()
+            for label in parse_label_names(prefix)
+        }
+
+        for label in self.labels:
+            if label.casefold() in normalized_selected:
+                continue
+            if label.casefold().startswith(normalized_fragment):
+                spacer = "" if not prefix or prefix.endswith((" ", ",")) else " "
+                return f"{prefix}{spacer}{label}"
+        return None
+
+
+def split_label_input(raw: str) -> tuple[str, str]:
+    head, separator, tail = raw.rpartition(",")
+    if not separator:
+        return ("", raw)
+    return (f"{head}{separator}", tail)
+
+
 class ConfirmScreen(ModalScreen[bool]):
     CSS = ui.CONFIRM_SCREEN_CSS
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("enter", "confirm", "Confirm", show=False),
+        Binding("n", "cancel", "Cancel", show=False),
+        Binding("y", "confirm", "Confirm", show=False),
     ]
 
     def __init__(
@@ -61,56 +99,64 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("ctrl+s", "submit", "Save", show=False),
+        Binding("ctrl+enter", "submit", "Save", show=False),
     ]
 
-    def __init__(self, task: Task | None) -> None:
+    def __init__(self, task: Task | None, labels: list[TodoistLabel]) -> None:
         super().__init__()
         self.todoist_task = task
+        self.available_label_names = sorted((label.name for label in labels), key=str.casefold)
 
     def compose(self) -> ComposeResult:
         title = "Edit task" if self.todoist_task is not None else "Create task"
-        hint = (
-            "Update the selected Todoist task. Use comma-separated labels."
-            if self.todoist_task is not None
-            else "Capture a new Inbox task. Use comma-separated labels."
+        content_input = Input(
+            value=self.todoist_task.content if self.todoist_task is not None else "",
+            placeholder="Required",
+            id="task-editor-content",
         )
-        yield Container(
-            Static(title, classes="editor-title"),
-            Static(hint, classes="editor-help"),
-            Static("Content", classes="field-label"),
-            Input(
-                value=self.todoist_task.content if self.todoist_task is not None else "",
-                placeholder="Required",
-                id="task-editor-content",
-            ),
-            Static("Description", classes="field-label"),
-            TextArea(
-                self.todoist_task.description or "" if self.todoist_task is not None else "",
-                id="task-editor-description",
-                placeholder="Optional details",
-            ),
-            Static("Labels", classes="field-label"),
-            Input(
-                value=", ".join(self.todoist_task.labels or []) if self.todoist_task is not None else "",
-                placeholder="comma-separated label names",
-                id="task-editor-labels",
-            ),
-            Static("Due", classes="field-label"),
-            Input(
-                value=self.todoist_task.due.string if self.todoist_task is not None and self.todoist_task.due else "",
-                placeholder="tomorrow 5pm, friday, next month...",
-                id="task-editor-due",
-            ),
+        content_input.border_title = " Content "
+
+        description_input = TextArea(
+            self.todoist_task.description or "" if self.todoist_task is not None else "",
+            id="task-editor-description",
+            placeholder="Optional details",
+        )
+        description_input.border_title = " Description "
+
+        labels_input = Input(
+            value=", ".join(self.todoist_task.labels or []) if self.todoist_task is not None else "",
+            placeholder="comma-separated labels, type to autocomplete",
+            suggester=LabelSuggester(self.available_label_names),
+            id="task-editor-labels",
+        )
+        labels_input.border_title = " Labels "
+
+        due_input = Input(
+            value=self.todoist_task.due.string if self.todoist_task is not None and self.todoist_task.due else "",
+            placeholder="tomorrow 5pm, friday, next month...",
+            id="task-editor-due",
+        )
+        due_input.border_title = " Due "
+
+        shell = Container(
+            content_input,
+            description_input,
+            labels_input,
+            Static(id="task-editor-label-hint"),
+            due_input,
             Horizontal(
-                Button("Cancel", id="task-editor-cancel"),
-                Button("Save", id="task-editor-save", variant="success"),
+                Button(Text("Cancel [Esc]"), id="task-editor-cancel", compact=True),
+                Button(Text("Save [Ctrl+S]"), id="task-editor-save", variant="success", compact=True),
                 id="task-editor-actions",
             ),
             id="task-editor-shell",
         )
+        shell.border_title = title
+        yield shell
 
     def on_mount(self) -> None:
         self.query_one("#task-editor-content", Input).focus()
+        self._refresh_label_hint(self.query_one("#task-editor-labels", Input).value)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -136,6 +182,36 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
             return
         self.action_cancel()
 
+    @on(Input.Changed, "#task-editor-labels")
+    def _on_task_editor_labels_changed(self, event: Input.Changed) -> None:
+        self._refresh_label_hint(event.value)
+
+    def _refresh_label_hint(self, raw_value: str) -> None:
+        hint = self.query_one("#task-editor-label-hint", Static)
+        if not self.available_label_names:
+            hint.update("")
+            return
+
+        prefix, fragment = split_label_input(raw_value)
+        fragment_text = fragment.strip()
+        selected_names = parse_label_names(prefix)
+        selected_names.extend(parse_label_names(fragment_text) if "," not in fragment else [])
+        selected = {label.casefold() for label in selected_names}
+
+        if fragment_text:
+            matches = [
+                f"@{label}"
+                for label in self.available_label_names
+                if label.casefold().startswith(fragment_text.casefold()) and label.casefold() not in selected
+            ][:8]
+            if matches:
+                hint.update(f"Matching labels: {', '.join(matches)}")
+                return
+            hint.update("No existing labels match the current text.")
+            return
+
+        hint.update("")
+
 
 class LabelEditorScreen(ModalScreen[LabelFormData | None]):
     CSS = ui.LABEL_EDITOR_SCREEN_CSS
@@ -143,6 +219,7 @@ class LabelEditorScreen(ModalScreen[LabelFormData | None]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("ctrl+s", "submit", "Save", show=False),
+        Binding("ctrl+enter", "submit", "Save", show=False),
     ]
 
     def __init__(self, label: TodoistLabel | None) -> None:
@@ -151,30 +228,42 @@ class LabelEditorScreen(ModalScreen[LabelFormData | None]):
 
     def compose(self) -> ComposeResult:
         title = "Edit label" if self.label is not None else "Create label"
-        with Container(id="label-editor-shell"):
-            yield Static(title, classes="editor-title")
-            yield Static("Labels stay out of the main board and are managed here.", classes="editor-help")
-            yield Static("Name", classes="field-label")
-            yield Input(
-                value=self.label.name if self.label is not None else "",
-                placeholder="Label name",
-                id="label-editor-name",
-            )
-            yield Static("Color", classes="field-label")
-            yield Select(
-                ui.COLOR_SELECT_OPTIONS,
-                allow_blank=False,
-                value=self.label.color if self.label is not None else "charcoal",
-                id="label-editor-color",
-            )
-            yield Checkbox(
-                "Favorite",
-                value=self.label.is_favorite if self.label is not None else False,
-                id="label-editor-favorite",
-            )
-            with Horizontal(id="label-editor-actions"):
-                yield Button("Cancel", id="label-editor-cancel")
-                yield Button("Save", id="label-editor-save", variant="success")
+        name_input = Input(
+            value=self.label.name if self.label is not None else "",
+            placeholder="Label name",
+            id="label-editor-name",
+        )
+        name_input.border_title = " Name "
+
+        color_input = Select(
+            ui.COLOR_SELECT_OPTIONS,
+            allow_blank=False,
+            value=self.label.color if self.label is not None else "charcoal",
+            id="label-editor-color",
+        )
+        color_input.border_title = " Color "
+
+        favorite_input = Checkbox(
+            "Favorite",
+            value=self.label.is_favorite if self.label is not None else False,
+            id="label-editor-favorite",
+            compact=True,
+        )
+        favorite_input.border_title = " Options "
+
+        shell = Container(
+            name_input,
+            color_input,
+            favorite_input,
+            Horizontal(
+                Button(Text("Cancel [Esc]"), id="label-editor-cancel", compact=True),
+                Button(Text("Save [Ctrl+S]"), id="label-editor-save", variant="success", compact=True),
+                id="label-editor-actions",
+            ),
+            id="label-editor-shell",
+        )
+        shell.border_title = title
+        yield shell
 
     def on_mount(self) -> None:
         self.query_one("#label-editor-name", Input).focus()

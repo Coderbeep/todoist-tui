@@ -65,7 +65,7 @@ APP_THEME = Theme(
     accent=ACCENT_SOFT,
     warning=ACCENT_WARNING,
     error=ACTIVE_TASK_BORDER,
-    success="#98a37a",
+    success=ACCENT_PRIMARY,
     foreground=TEXT_DEFAULT,
     background=APP_BG,
     surface=SURFACE_BG,
@@ -153,6 +153,12 @@ Button.group-chip.is-active {{
     margin-right: 1;
     background: {PANEL_SHADE};
     border: round {ACCENT_BORDER};
+    border-title-align: center;
+    border-subtitle-align: right;
+    border-title-style: bold;
+    border-title-color: {TEXT_PRIMARY};
+    border-subtitle-style: bold;
+    border-subtitle-color: {TEXT_MUTED};
 }}
 
 #detail-stack {{
@@ -307,20 +313,126 @@ TASK_EDITOR_SCREEN_CSS = (
         76,
         88,
         screen_selector="TaskEditorScreen",
+        overlay_opacity=78,
         include_text_area=True,
         actions_id="task-editor-actions",
     )
-    + "\n\n#task-editor-description {\n    height: 8;\n}"
+    + f"""
+
+#task-editor-shell {{
+    min-width: 68;
+    max-height: 94%;
+    background: {PANEL_SHADE};
+    border: round {ACCENT_BORDER_BLURRED};
+    border-title-align: center;
+    border-title-color: {TEXT_PRIMARY};
+    border-title-style: bold;
+}}
+
+#task-editor-label-hint {{
+    color: {TEXT_MUTED};
+    margin-top: 0;
+    margin-bottom: 1;
+}}
+
+#task-editor-content,
+#task-editor-labels,
+#task-editor-due {{
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: tall {INACTIVE_TASK_BORDER};
+    border-title-color: {TEXT_SUBTLE};
+    border-title-style: bold;
+}}
+
+#task-editor-content:focus,
+#task-editor-labels:focus,
+#task-editor-due:focus {{
+    background: {INPUT_FOCUS_BG};
+    border: tall {ACCENT_PRIMARY};
+}}
+
+#task-editor-description {{
+    height: 8;
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: tall {INACTIVE_TASK_BORDER};
+    border-title-color: {TEXT_SUBTLE};
+    border-title-style: bold;
+}}
+
+#task-editor-description:focus {{
+    background: {INPUT_FOCUS_BG};
+    border: tall {ACCENT_PRIMARY};
+}}
+
+#task-editor-actions {{
+    margin-top: 2;
+    border-top: heavy {INACTIVE_TASK_BORDER};
+    padding-top: 1;
+}}
+
+#task-editor-actions Button {{
+    width: auto;
+    min-width: 0;
+    padding: 0 2;
+}}
+"""
 )
 
-LABEL_EDITOR_SCREEN_CSS = build_modal_css(
-    "label-editor-shell",
-    72,
-    92,
-    overlay_opacity=80,
-    include_text_area=True,
-    actions_id="label-editor-actions",
-).replace("TextArea,\n", "").replace("TextArea:focus,\n", "")
+LABEL_EDITOR_SCREEN_CSS = (
+    build_modal_css(
+        "label-editor-shell",
+        72,
+        92,
+        overlay_opacity=80,
+        include_text_area=True,
+        actions_id="label-editor-actions",
+    )
+    .replace("TextArea,\n", "")
+    .replace("TextArea:focus,\n", "")
+    + f"""
+
+#label-editor-shell {{
+    min-width: 60;
+    max-height: 94%;
+    background: {PANEL_SHADE};
+    border: round {ACCENT_BORDER_BLURRED};
+    border-title-align: center;
+    border-title-color: {TEXT_PRIMARY};
+    border-title-style: bold;
+}}
+
+#label-editor-name,
+#label-editor-color,
+#label-editor-favorite {{
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: tall {INACTIVE_TASK_BORDER};
+    border-title-color: {TEXT_SUBTLE};
+    border-title-style: bold;
+}}
+
+#label-editor-name:focus,
+#label-editor-color:focus,
+#label-editor-favorite:focus {{
+    background: {INPUT_FOCUS_BG};
+    border: tall {ACCENT_PRIMARY};
+}}
+
+#label-editor-actions {{
+    margin-top: 2;
+    border-top: heavy {INACTIVE_TASK_BORDER};
+    padding-top: 1;
+}}
+
+#label-editor-actions Button {{
+    width: auto;
+    min-width: 0;
+    padding: 0 2;
+}}
+"""
+)
 
 LABEL_MANAGER_SCREEN_CSS = build_modal_css(
     "label-manager-shell",

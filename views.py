@@ -119,19 +119,7 @@ def build_task_panel(
     border_style: str,
 ) -> RenderableType:
     tasks = group.tasks
-    header = Table.grid(expand=True)
-    header.add_column(ratio=1)
-    header.add_column(no_wrap=True, justify="right")
-    header.add_row(
-        Text(group.title, style=title_style),
-        Text(f"{len(tasks)} task{'s' if len(tasks) != 1 else ''}", style=f"bold {ui.TEXT_MUTED}"),
-    )
-
-    renderables: list[RenderableType] = [
-        header,
-        Text(group.help_text, style=muted_style),
-        Text(""),
-    ]
+    renderables: list[RenderableType] = []
 
     if not tasks:
         renderables.extend(
@@ -199,10 +187,13 @@ def build_task_card(
         Text(task.content, style=selected_text_style if selected else body_text_style),
         Text(task.id, style=border_style),
     )
-    summary.add_row(
-        Text(compact_multiline_text(task.description), style=subtle_text_style) if task.description else Text(""),
-        meta,
-    )
+    if task.description:
+        summary.add_row(
+            Text(compact_multiline_text(task.description), style=subtle_text_style),
+            meta,
+        )
+    else:
+        summary.add_row(Text(""), meta)
 
     body_items: list[RenderableType] = [summary]
 

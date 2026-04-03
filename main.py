@@ -282,13 +282,13 @@ class TodoistKanbanApp(App[None]):
     def action_new_task(self) -> None:
         if self.busy or self.inbox_project_id is None:
             return
-        self.push_screen(TaskEditorScreen(None), self._finish_new_task)
+        self.push_screen(TaskEditorScreen(None, self.labels), self._finish_new_task)
 
     def action_edit_task(self) -> None:
         task = self.selected_task
         if self.busy or task is None:
             return
-        self.push_screen(TaskEditorScreen(task), self._finish_edit_task)
+        self.push_screen(TaskEditorScreen(task, self.labels), self._finish_edit_task)
 
     def action_complete_task(self) -> None:
         task = self.selected_task
@@ -598,6 +598,7 @@ class TodoistKanbanApp(App[None]):
         if not self.is_mounted:
             return
         self._clamp_selection()
+        selected_group = self.selected_group
         self.query_one("#workspace-header", Static).update(
             build_workspace_header(
                 self.inbox_name,
@@ -606,7 +607,11 @@ class TodoistKanbanApp(App[None]):
                 busy=self.busy,
             )
         )
-        self.query_one("#task-panel", Static).update(self._build_task_panel())
+        task_panel = self.query_one("#task-panel", Static)
+        task_panel.border_title = self._task_panel_title(selected_group)
+        task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
+        task_panel.styles.border = ("round", ui.ACCENT_BORDER)
+        task_panel.update(self._build_task_panel())
         self.query_one("#detail-panel", Static).update(self._build_detail_panel())
         self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
         self.query_one("#status", Static).update(self._build_status_bar())
@@ -663,6 +668,13 @@ class TodoistKanbanApp(App[None]):
 
     def _build_status_bar(self) -> RenderableType:
         return build_status_bar(self.status, busy=self.busy, body_text_style=self.BODY_TEXT_STYLE)
+
+    def _task_panel_title(self, group: LabelGroup) -> str:
+        return group.title
+
+    def _task_panel_subtitle(self, group: LabelGroup) -> str:
+        task_count = len(group.tasks)
+        return f"{task_count} task{'s' if task_count != 1 else ''}"
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Todoist Inbox grouped by labels in a kanban-style TUI")
