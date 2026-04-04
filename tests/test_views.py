@@ -9,6 +9,7 @@ from rich.text import Text
 import ui_styles as ui
 from views import (
     build_calendar_widget,
+    build_detail_markdown,
     build_detail_panel,
     build_label_manager_rows,
     build_status_bar,
@@ -171,11 +172,19 @@ class ViewsTests(unittest.TestCase):
         self.assertIn("Alpha task", text)
         self.assertIn("next wednesday", text)
         self.assertIn("alpha, beta", text)
-        self.assertIn("Full description", text)
+        self.assertIn("DESCRIPTION", text)
+        self.assertIn("Rendered below as Markdown.", text)
+
+    def test_build_detail_markdown_returns_description_or_placeholder(self) -> None:
+        described_task = make_task("task-1", "Alpha task", description="# Heading\n\n- item")
+        empty_task = make_task("task-2", "Beta task", description="   ")
+
+        self.assertEqual(build_detail_markdown(described_task), "# Heading\n\n- item")
+        self.assertEqual(build_detail_markdown(empty_task), "_No description._")
+        self.assertEqual(build_detail_markdown(None), "")
 
     def test_build_status_bar_returns_text_message(self) -> None:
         status = build_status_bar("Ready", busy=False, body_text_style=ui.TEXT_DEFAULT)
 
         self.assertIsInstance(status, Text)
         self.assertEqual(status.plain, "Ready")
-

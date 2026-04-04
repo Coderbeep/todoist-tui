@@ -12,8 +12,8 @@ from rich.console import RenderableType
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, HorizontalScroll, Vertical
-from textual.widgets import Button, Static
+from textual.containers import Container, Horizontal, HorizontalScroll, Vertical, VerticalScroll
+from textual.widgets import Button, Markdown, Static
 from textual.widgets._footer import Footer as BaseFooter, FooterKey, FooterLabel, KeyGroup
 from todoist_api_python.api import TodoistAPI
 from todoist_api_python.models import Label as TodoistLabel
@@ -23,7 +23,7 @@ import ui_styles as ui
 from app_types import LabelFormData, LabelGroup, LabelMutationRequest, MutationResult, SelectionState, TaskFormData, TodoistSnapshot
 from app_utils import build_label_groups, compact_text, flatten_pages, format_error
 from screens import ConfirmScreen, LabelManagerScreen, TaskEditorScreen
-from views import build_calendar_widget, build_detail_panel, build_status_bar, build_task_card, build_task_panel, build_workspace_header, group_label
+from views import build_calendar_widget, build_detail_markdown, build_detail_panel, build_status_bar, build_task_card, build_task_panel, build_workspace_header, group_label
 
 
 class AppFooter(BaseFooter):
@@ -214,7 +214,9 @@ class TodoistKanbanApp(App[None]):
             with Horizontal(id="content"):
                 yield Static(id="task-panel")
                 with Vertical(id="detail-stack"):
-                    yield Static(id="detail-panel")
+                    with VerticalScroll(id="detail-panel"):
+                        yield Static(id="detail-summary")
+                        yield Markdown(id="detail-markdown", open_links=False)
                     yield Static(id="calendar-panel")
             yield Static(id="status")
             yield AppFooter()
@@ -655,7 +657,8 @@ class TodoistKanbanApp(App[None]):
 
         self._clamp_selection()
         self.query_one("#task-panel", Static).update(self._build_task_panel())
-        self.query_one("#detail-panel", Static).update(self._build_detail_panel())
+        self.query_one("#detail-summary", Static).update(self._build_detail_panel())
+        self.query_one("#detail-markdown", Markdown).update(build_detail_markdown(self.selected_task))
         self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
 
     def _refresh_group_and_task_views(self) -> None:

@@ -231,7 +231,6 @@ def build_detail_panel(
     meta.add_row("group", group.title)
     meta.add_row("due", task.due.string if task.due else "none")
     meta.add_row("labels", ", ".join(task.labels or []) or "none")
-    meta.add_row("description", task.description or "none")
 
     return Group(
         Text("INSPECTOR", style=ui.ACCENT_SECONDARY),
@@ -239,11 +238,21 @@ def build_detail_panel(
         Text(""),
         meta,
         Text(""),
+        Text("DESCRIPTION", style=ui.ACCENT_SECONDARY),
+        Text("Rendered below as Markdown.", style=muted_style),
+        Text(""),
         Text(
             "Edit with e or Enter. Complete with Space. Delete with x.",
             style=muted_style,
         ),
     )
+
+
+def build_detail_markdown(task: Task | None) -> str:
+    if task is None:
+        return ""
+    description = task.description.strip()
+    return description if description else "_No description._"
 
 
 def build_status_bar(status: str, *, busy: bool, body_text_style: str) -> RenderableType:

@@ -174,6 +174,17 @@ Button.group-chip.is-active {{
     border: round {ACCENT_BORDER};
 }}
 
+#detail-summary {{
+    height: auto;
+}}
+
+#detail-markdown {{
+    height: auto;
+    min-height: 1;
+    margin-top: 1;
+    background: transparent;
+}}
+
 #calendar-panel {{
     height: auto;
     min-height: 11;

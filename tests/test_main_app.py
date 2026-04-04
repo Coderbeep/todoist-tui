@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from textual.widgets import Markdown
+
 from app_types import LabelFormData, LabelMutationRequest, SelectionState, TaskFormData
 from main import TodoistGateway, TodoistKanbanApp, parse_args, resolve_token
 from screens import ConfirmScreen, LabelManagerScreen, TaskEditorScreen
@@ -255,3 +257,22 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(app.selected_group.key, "label:label-1")
             self.assertEqual(app.selected_task.id, "task-2")
+
+    async def test_detail_markdown_widget_receives_task_description(self) -> None:
+        app = SnapshotPilotApp(
+            make_snapshot(
+                tasks=[
+                    make_task(
+                        "task-1",
+                        "Alpha",
+                        description="# Heading\n\n- item",
+                    )
+                ],
+                labels=[],
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            markdown = app.query_one("#detail-markdown", Markdown)
+            self.assertEqual(markdown._markdown, "# Heading\n\n- item")
