@@ -1,14 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "todoist-integration"
+name = "todoist-tui"
 version = "0.1.0"
-description = "Add your description here"
+description = "Keyboard-first Textual Todoist client with label-grouped task browsing and modal editing"
 readme = "README.md"
 requires-python = ">=3.10"
+authors = [
+    { name = "Coderbeep" },
+]
+keywords = ["todoist", "textual", "tui", "terminal", "productivity"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Terminals",
+    "Topic :: Utilities",
+]
 dependencies = [
     "httpx>=0.28.1",
     "textual>=8.2.1",
     "todoist-api-python>=4.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Coderbeep/todoist-tui"
+Repository = "https://github.com/Coderbeep/todoist-tui"
+Issues = "https://github.com/Coderbeep/todoist-tui/issues"
+
 [project.scripts]
 todoist-tui = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "app_types", "app_utils", "screens", "ui_styles", "views"]
