@@ -140,6 +140,17 @@ class MainHelpersTests(unittest.TestCase):
             "label:label-2",
         )
 
+    def test_navigation_repeat_gate_rejects_rapid_same_key_only(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        app._last_navigation_key = None
+        app._last_navigation_time = 0.0
+
+        with patch("main.time.monotonic", side_effect=[1.0, 1.05, 1.06, 1.20]):
+            self.assertTrue(TodoistKanbanApp._should_accept_navigation_key(app, "down"))
+            self.assertFalse(TodoistKanbanApp._should_accept_navigation_key(app, "down"))
+            self.assertTrue(TodoistKanbanApp._should_accept_navigation_key(app, "up"))
+            self.assertTrue(TodoistKanbanApp._should_accept_navigation_key(app, "down"))
+
 
 class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_navigation_keys_move_between_groups_and_tasks(self) -> None:
@@ -163,6 +174,7 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.selected_group.key, "unlabeled")
             self.assertEqual(app.selected_task.id, "task-2")
 
+            await pilot.pause(TodoistKanbanApp.NAVIGATION_REPEAT_INTERVAL + 0.02)
             await pilot.press("right")
             self.assertEqual(app.selected_group.key, "label:label-1")
             self.assertEqual(app.selected_task.id, "task-1")

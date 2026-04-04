@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import time
 from collections import defaultdict
 from itertools import groupby
 from typing import Callable
@@ -13,6 +14,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, HorizontalScroll, Vertical, VerticalScroll
+from textual import events
 from textual.widgets import Button, Markdown, Static
 from textual.widgets._footer import Footer as BaseFooter, FooterKey, FooterLabel, KeyGroup
 from todoist_api_python.api import TodoistAPI
@@ -186,6 +188,8 @@ class TodoistKanbanApp(App[None]):
 
     TITLE = "Todoist Kanban"
     ENABLE_COMMAND_PALETTE = False
+    NAVIGATION_REPEAT_INTERVAL = 0.12
+    NAVIGATION_KEYS = {"left", "right", "up", "down", "h", "j", "k", "l"}
 
     def __init__(self, token: str, due_lang: str = "en") -> None:
         super().__init__()
@@ -203,6 +207,8 @@ class TodoistKanbanApp(App[None]):
         self.status = "Connecting to Todoist..."
         self.busy = False
         self._group_buttons: dict[str, Button] = {}
+        self._last_navigation_key: str | None = None
+        self._last_navigation_time = 0.0
         self.register_theme(ui.APP_THEME)
         self.theme = ui.APP_THEME.name
 
@@ -259,6 +265,26 @@ class TodoistKanbanApp(App[None]):
             return
         self._select_group_by_key(group_key)
         self._refresh_group_and_task_views()
+
+    def on_key(self, event: events.Key) -> None:
+        key = event.key.lower()
+        if key not in self.NAVIGATION_KEYS:
+            return
+        if self._should_accept_navigation_key(key):
+            return
+        event.prevent_default()
+        event.stop()
+
+    def _should_accept_navigation_key(self, key: str) -> bool:
+        now = time.monotonic()
+        if (
+            key == self._last_navigation_key
+            and now - self._last_navigation_time < self.NAVIGATION_REPEAT_INTERVAL
+        ):
+            return False
+        self._last_navigation_key = key
+        self._last_navigation_time = now
+        return True
 
     def action_previous_group(self) -> None:
         if self.selection.group_index == 0:
