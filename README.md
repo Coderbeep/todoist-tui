@@ -2,11 +2,15 @@
 
 A Textual-based Todoist client with a keyboard-first kanban feel inspired by the `todocli/` board UI.
 
+## Preview
+
+![Todoist Kanban main UI](./docs/images/todoist-kanban-main-ui.png)
+
 ## What It Does
 
 - Loads active tasks from your Todoist Inbox
-- Groups the board by labels, with dedicated views for `All Tasks` and `No Label`
-- Keeps the main screen focused on browsing tasks and task details
+- Groups tasks in a left sidebar by labels, with dedicated views for `All Tasks` and `No Label`
+- Uses a 3-pane layout: label groups, task list, and inspector
 - Opens task creation/editing in a centered popup instead of a permanent editor pane
 - Opens label creation/editing/deletion in a dedicated popup manager
 - Runs with mouse support disabled
@@ -31,10 +35,25 @@ or:
 uv run todoist-tui
 ```
 
+If no token is configured, the app starts in a built-in read-only demo mode with sample tasks and labels. That makes it easy to capture screenshots without connecting to Todoist.
+
 ## Keyboard
 
-- `h` / `l` or arrow left/right: switch label groups
-- `j` / `k` or arrow down/up: move between tasks in the current group
+Main screen pane movement:
+
+- `Tab` / `Shift+Tab`: cycle between `Labels`, `Tasks`, and `Inspector`
+- `Left` / `Right`: move between the 3 main panes
+- `Esc`: return focus to the task list pane
+
+Main screen navigation inside the active pane:
+
+- `j` / `k` or `Down` / `Up`
+  - in `Labels`: move between label groups
+  - in `Tasks`: move between tasks in the current group
+  - in `Inspector`: scroll the inspector
+
+Main screen actions:
+
 - `n`: create a new task
 - `e` or `Enter`: edit the selected task
 - `Space`: complete the selected task
@@ -47,6 +66,12 @@ Inside task and label popups:
 
 - `Ctrl+S`: save
 - `Esc`: cancel
+
+Inside task create/edit:
+
+- `Content`, `Labels`, and `Due` start with the caret at the end of the existing text
+- `Description` starts with the caret at the end and does not auto-select the current line
+- Label entry supports autocomplete for existing Todoist labels
 
 Inside the label manager popup:
 
@@ -65,4 +90,5 @@ Inside the label manager popup:
 
 - New tasks are always created in the Inbox project Todoist marks as your Inbox
 - Tasks with multiple labels can appear in multiple label groups
+- Labels are shown as a lightweight left-hand navigation rail rather than boxed chips
 - Leaving the due field blank while editing a task removes its existing due date

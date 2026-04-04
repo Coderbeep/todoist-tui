@@ -12,7 +12,7 @@ from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelGroup
-from app_utils import compact_multiline_text, compact_text, humanize_color_name, task_window
+from app_utils import compact_multiline_text, humanize_color_name, task_window
 
 
 def group_label(group: LabelGroup) -> str:

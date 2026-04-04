@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from rich.console import RenderableType
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
@@ -14,7 +13,7 @@ from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelFormData, LabelMutationRequest, TaskFormData
-from app_utils import compact_text, parse_label_names
+from app_utils import parse_label_names
 from views import build_label_manager_rows
 
 
