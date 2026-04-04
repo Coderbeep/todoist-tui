@@ -112,6 +112,7 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
         content_input = Input(
             value=self.todoist_task.content if self.todoist_task is not None else "",
             placeholder="Required",
+            select_on_focus=False,
             id="task-editor-content",
         )
         content_input.border_title = " Content "
@@ -119,6 +120,7 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
         description_input = TextArea(
             self.todoist_task.description or "" if self.todoist_task is not None else "",
             id="task-editor-description",
+            highlight_cursor_line=False,
             placeholder="Optional details",
         )
         description_input.border_title = " Description "
@@ -127,6 +129,7 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
             value=", ".join(self.todoist_task.labels or []) if self.todoist_task is not None else "",
             placeholder="comma-separated labels, type to autocomplete",
             suggester=LabelSuggester(self.available_label_names),
+            select_on_focus=False,
             id="task-editor-labels",
         )
         labels_input.border_title = " Labels "
@@ -134,6 +137,7 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
         due_input = Input(
             value=self.todoist_task.due.string if self.todoist_task is not None and self.todoist_task.due else "",
             placeholder="tomorrow 5pm, friday, next month...",
+            select_on_focus=False,
             id="task-editor-due",
         )
         due_input.border_title = " Due "
@@ -155,8 +159,22 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
         yield shell
 
     def on_mount(self) -> None:
-        self.query_one("#task-editor-content", Input).focus()
+        self._move_task_editor_cursors_to_end()
+        content_input = self.query_one("#task-editor-content", Input)
+        content_input.focus()
         self._refresh_label_hint(self.query_one("#task-editor-labels", Input).value)
+
+    def _move_task_editor_cursors_to_end(self) -> None:
+        for selector in ("#task-editor-content", "#task-editor-labels", "#task-editor-due"):
+            input_widget = self.query_one(selector, Input)
+            input_widget.cursor_position = len(input_widget.value)
+
+        description_input = self.query_one("#task-editor-description", TextArea)
+        description_lines = description_input.text.splitlines() or [""]
+        description_input.cursor_location = (
+            len(description_lines) - 1,
+            len(description_lines[-1]),
+        )
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -197,12 +215,16 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
         selected_names = parse_label_names(prefix)
         selected_names.extend(parse_label_names(fragment_text) if "," not in fragment else [])
         selected = {label.casefold() for label in selected_names}
+        normalized_fragment = fragment_text.casefold()
 
         if fragment_text:
+            if normalized_fragment in {label.casefold() for label in self.available_label_names}:
+                hint.update("")
+                return
             matches = [
                 f"@{label}"
                 for label in self.available_label_names
-                if label.casefold().startswith(fragment_text.casefold()) and label.casefold() not in selected
+                if label.casefold().startswith(normalized_fragment) and label.casefold() not in selected
             ][:8]
             if matches:
                 hint.update(f"Matching labels: {', '.join(matches)}")

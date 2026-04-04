@@ -110,6 +110,43 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.result.labels, ["alpha", "beta"])
         self.assertEqual(app.result.due_string, "next friday")
 
+    async def test_task_editor_positions_all_cursors_at_end_without_auto_selection(self) -> None:
+        task = make_task(
+            "task-1",
+            "Original task",
+            description="First line\nSecond line",
+            labels=["alpha", "beta"],
+            due=make_due("2026-04-03", "tomorrow"),
+        )
+        app = ModalHostApp(TaskEditorScreen(task, []))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            content_input = screen.query_one("#task-editor-content", Input)
+            labels_input = screen.query_one("#task-editor-labels", Input)
+            due_input = screen.query_one("#task-editor-due", Input)
+            description_input = screen.query_one("#task-editor-description", TextArea)
+
+            self.assertFalse(content_input.select_on_focus)
+            self.assertFalse(labels_input.select_on_focus)
+            self.assertFalse(due_input.select_on_focus)
+            self.assertFalse(description_input.highlight_cursor_line)
+            self.assertEqual(content_input.selection, (len(content_input.value), len(content_input.value)))
+            self.assertEqual(labels_input.selection, (len(labels_input.value), len(labels_input.value)))
+            self.assertEqual(due_input.selection, (len(due_input.value), len(due_input.value)))
+            self.assertEqual(description_input.cursor_location, (1, len("Second line")))
+            self.assertEqual(description_input.selection.start, (1, len("Second line")))
+            self.assertEqual(description_input.selection.end, (1, len("Second line")))
+
+            labels_input.focus()
+            await pilot.pause()
+            self.assertEqual(labels_input.selection, (len(labels_input.value), len(labels_input.value)))
+
+            due_input.focus()
+            await pilot.pause()
+            self.assertEqual(due_input.selection, (len(due_input.value), len(due_input.value)))
+
     async def test_task_editor_updates_label_hint_for_matches(self) -> None:
         labels = [make_label("label-1", "alpha"), make_label("label-2", "alpine"), make_label("label-3", "beta")]
         app = ModalHostApp(TaskEditorScreen(None, labels))
@@ -122,6 +159,16 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
             hint = screen.query_one("#task-editor-label-hint", Static).content
 
         self.assertEqual(hint, "Matching labels: @alpha, @alpine")
+
+    async def test_task_editor_keeps_label_hint_empty_for_exact_existing_label(self) -> None:
+        labels = [make_label("label-1", "alpha"), make_label("label-2", "beta")]
+        app = ModalHostApp(TaskEditorScreen(make_task("task-1", "Task", labels=["alpha"]), labels))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            hint = app.screen.query_one("#task-editor-label-hint", Static).content
+
+        self.assertEqual(hint, "")
 
     async def test_task_editor_prevents_empty_save(self) -> None:
         app = ModalHostApp(TaskEditorScreen(None, []))
