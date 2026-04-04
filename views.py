@@ -75,7 +75,7 @@ def build_calendar_widget(task: Task | None) -> RenderableType:
             cells.append(Text(f"{day:>2}", style=style))
         days.add_row(*cells)
 
-    return Panel(days, title=month_name, border_style=ui.ACCENT_BORDER_BLURRED)
+    return Panel(days, title=month_name, border_style=ui.INACTIVE_TASK_BORDER)
 
 
 def build_label_manager_rows(labels: list[TodoistLabel], selected_index: int) -> RenderableType:
@@ -96,13 +96,14 @@ def build_label_manager_rows(labels: list[TodoistLabel], selected_index: int) ->
         )
         body.add_row(
             Text(favorite, style=ui.TEXT_MUTED),
-            Text(label.id, style=ui.ACCENT_BORDER),
+            Text(label.id, style=ui.TEXT_DEFAULT),
         )
         rows.append(
             Panel(
                 body,
-                border_style=accent if index == selected_index else ui.ACCENT_BORDER,
-                title="selected" if index == selected_index else "",
+                border_style=ui.ACCENT_PRIMARY if index == selected_index else ui.INACTIVE_TASK_BORDER,
+                style=f"on {ui.ACTIVE_ROW_BG}" if index == selected_index else "",
+                title="ACTIVE" if index == selected_index else "",
             )
         )
     return Group(*rows)
@@ -130,7 +131,7 @@ def build_task_panel(
         )
         return Group(*renderables)
 
-    visible_cards = max(2, (max(height, 18) - 16) // 5)
+    visible_cards = max(2, (max(height, 18) - 6) // 4)
     start, end = task_window(len(tasks), task_index, visible_cards)
 
     if start:
@@ -168,6 +169,7 @@ def build_task_card(
     card_title = "ACTIVE" if selected else "TASK"
     card_style = f"on {ui.ACTIVE_ROW_BG}" if selected else ""
     meta_style = ui.ACTIVE_TASK_BORDER if selected else border_style
+    task_id_style = border_style
 
     meta = Text(justify="right")
     if task.due:
@@ -190,7 +192,7 @@ def build_task_card(
     summary.add_column(no_wrap=True, justify="right")
     summary.add_row(
         Text(task.content, style=selected_text_style if selected else body_text_style),
-        Text(task.id, style=meta_style),
+        Text(task.id, style=task_id_style),
     )
     if task.description:
         summary.add_row(

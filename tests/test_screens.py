@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 
 from textual.app import App, ComposeResult
-from textual.widgets import Checkbox, Input, Select, Static, TextArea
+from textual.containers import Container
+from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea
 
 from app_types import LabelFormData, LabelMutationRequest, TaskFormData
 from screens import (
@@ -199,6 +200,23 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.result.color, "blue")
         self.assertTrue(app.result.is_favorite)
 
+    async def test_label_editor_matches_task_editor_field_treatment(self) -> None:
+        label = make_label("label-1", "alpha", color="red", is_favorite=True)
+        app = ModalHostApp(LabelEditorScreen(label))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            name_input = screen.query_one("#label-editor-name", Input)
+            color_input = screen.query_one("#label-editor-color", Select)
+            favorite_input = screen.query_one("#label-editor-favorite", Checkbox)
+
+            self.assertFalse(name_input.select_on_focus)
+            self.assertEqual(name_input.selection, (len(name_input.value), len(name_input.value)))
+            self.assertEqual(name_input.border_title, " Name ")
+            self.assertEqual(color_input.border_title, " Color ")
+            self.assertEqual(favorite_input.border_title, " Options ")
+
     async def test_label_editor_prevents_blank_name(self) -> None:
         app = ModalHostApp(LabelEditorScreen(None))
 
@@ -268,3 +286,18 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(app.result, LabelMutationRequest)
         self.assertEqual(app.result.action, "delete")
         self.assertEqual(app.result.label_id, "label-2")
+
+    async def test_label_manager_matches_task_editor_modal_chrome(self) -> None:
+        app = ModalHostApp(LabelManagerScreen([make_label("label-1", "alpha")]))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            shell = screen.query_one("#label-manager-shell", Container)
+            label_list = screen.query_one("#label-manager-list", Static)
+            add_button = screen.query_one("#label-manager-add", Button)
+
+            self.assertEqual(shell.border_title, "Manage labels")
+            self.assertIsNone(label_list.border_title)
+            self.assertIsNone(label_list.border_subtitle)
+            self.assertTrue(add_button.compact)

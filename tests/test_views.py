@@ -47,6 +47,7 @@ class ViewsTests(unittest.TestCase):
 
         self.assertIsInstance(panel, Panel)
         self.assertEqual(panel.title, "DECEMBER 2026")
+        self.assertEqual(panel.border_style, ui.INACTIVE_TASK_BORDER)
 
     def test_build_calendar_widget_falls_back_to_current_month_for_invalid_due(self) -> None:
         panel = build_calendar_widget(make_task("task-1", "Alpha", due=make_due("not-a-date", "someday")))
@@ -63,7 +64,19 @@ class ViewsTests(unittest.TestCase):
 
         self.assertIn("urgent", text)
         self.assertIn("home", text)
-        self.assertIn("selected", text)
+        self.assertIn("ACTIVE", text)
+
+    def test_build_label_manager_rows_keeps_borders_neutral(self) -> None:
+        rows = build_label_manager_rows(
+            [make_label("label-1", "urgent", color="red"), make_label("label-2", "home", color="blue")],
+            0,
+        )
+        active_panel = rows.renderables[0]
+        inactive_panel = rows.renderables[1]
+
+        self.assertEqual(active_panel.border_style, ui.ACCENT_PRIMARY)
+        self.assertEqual(str(active_panel.style), f"on {ui.ACTIVE_ROW_BG}")
+        self.assertEqual(inactive_panel.border_style, ui.INACTIVE_TASK_BORDER)
 
     def test_build_task_panel_shows_empty_state(self) -> None:
         group = make_group("all", "All Tasks", tasks=[])
@@ -99,9 +112,28 @@ class ViewsTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("3 earlier tasks above", text)
+        self.assertIn("2 earlier tasks above", text)
         self.assertIn("1 more task below", text)
         self.assertIn("task-3:True", text)
+
+    def test_build_task_panel_fills_more_of_tall_viewports(self) -> None:
+        tasks = [make_task(f"task-{index}", f"Task {index}") for index in range(8)]
+        group = make_group("all", "All Tasks", tasks=tasks)
+
+        text = render_text(
+            build_task_panel(
+                group,
+                0,
+                30,
+                lambda task, *, selected, accent: Text(task.id),
+                title_style="bold white",
+                muted_style="grey50",
+                border_style="red",
+            )
+        )
+
+        self.assertIn("task-5", text)
+        self.assertIn("2 more tasks below", text)
 
     def test_build_task_card_shows_due_labels_and_overflow_count(self) -> None:
         task = make_task(

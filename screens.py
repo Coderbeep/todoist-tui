@@ -253,6 +253,7 @@ class LabelEditorScreen(ModalScreen[LabelFormData | None]):
         name_input = Input(
             value=self.label.name if self.label is not None else "",
             placeholder="Label name",
+            select_on_focus=False,
             id="label-editor-name",
         )
         name_input.border_title = " Name "
@@ -288,7 +289,9 @@ class LabelEditorScreen(ModalScreen[LabelFormData | None]):
         yield shell
 
     def on_mount(self) -> None:
-        self.query_one("#label-editor-name", Input).focus()
+        name_input = self.query_one("#label-editor-name", Input)
+        name_input.cursor_position = len(name_input.value)
+        name_input.focus()
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -333,15 +336,15 @@ class LabelManagerScreen(ModalScreen[LabelMutationRequest | None]):
         self.label_index = 0
 
     def compose(self) -> ComposeResult:
-        with Container(id="label-manager-shell"):
-            yield Static("Manage labels", id="label-manager-title")
-            yield Static("j/k move, a add, e edit, x delete, esc close.", id="label-manager-help")
-            yield Static(id="label-manager-list")
+        label_list = Static(id="label-manager-list")
+        with Container(id="label-manager-shell") as shell:
+            yield label_list
             with Horizontal(id="label-manager-actions"):
-                yield Button("Add", id="label-manager-add", variant="success")
-                yield Button("Edit", id="label-manager-edit")
-                yield Button("Delete", id="label-manager-delete", variant="error")
-                yield Button("Close", id="label-manager-close")
+                yield Button(Text("Add [a]"), id="label-manager-add", compact=True)
+                yield Button(Text("Edit [e]"), id="label-manager-edit", compact=True)
+                yield Button(Text("Delete [x]"), id="label-manager-delete", compact=True)
+                yield Button(Text("Close [Esc]"), id="label-manager-close", compact=True)
+        shell.border_title = "Manage labels"
 
     def on_mount(self) -> None:
         self._refresh_list()
@@ -413,6 +416,5 @@ class LabelManagerScreen(ModalScreen[LabelMutationRequest | None]):
             self.dismiss(LabelMutationRequest(action="delete", label_id=label_id))
 
     def _refresh_list(self) -> None:
-        self.query_one("#label-manager-list", Static).update(
-            build_label_manager_rows(self.labels, self.label_index)
-        )
+        label_list = self.query_one("#label-manager-list", Static)
+        label_list.update(build_label_manager_rows(self.labels, self.label_index))

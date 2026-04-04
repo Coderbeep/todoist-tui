@@ -116,24 +116,35 @@ Screen {{
 }}
 
 #group-rail {{
-    height: 4;
-    margin: 1 1 0 1;
+    width: 24;
+    height: 1fr;
+    margin-right: 1;
+    padding: 1;
+    scrollbar-size-vertical: 1;
+    background: {PANEL_SHADE};
+    border: round {INACTIVE_TASK_BORDER};
+    border-title-align: center;
+    border-title-style: bold;
+    border-title-color: {TEXT_PRIMARY};
 }}
 
 #group-strip {{
+    width: 1fr;
     height: auto;
-    width: auto;
+    background: {PANEL_SHADE};
 }}
 
 Button.group-chip {{
-    width: auto;
-    min-width: 16;
-    height: 3;
-    margin-right: 1;
-    padding: 0 2;
+    width: 1fr;
+    height: 2;
+    min-width: 0;
+    margin-bottom: 1;
+    padding: 0 1;
     color: {TEXT_MUTED};
-    background: {TAB_BG};
-    border: round {ACCENT_BORDER_BLURRED};
+    background: {PANEL_SHADE};
+    border: none;
+    content-align: left middle;
+    text-align: left;
 }}
 
 Button.group-chip.is-active {{
@@ -152,7 +163,7 @@ Button.group-chip.is-active {{
     padding: 1 2;
     margin-right: 1;
     background: {PANEL_SHADE};
-    border: round {ACCENT_BORDER};
+    border: round {INACTIVE_TASK_BORDER};
     border-title-align: center;
     border-subtitle-align: right;
     border-title-style: bold;
@@ -170,8 +181,12 @@ Button.group-chip.is-active {{
     height: 1fr;
     margin-bottom: 1;
     padding: 1 2;
+    scrollbar-size-vertical: 1;
     background: {PANEL_SHADE};
-    border: round {ACCENT_BORDER};
+    border: round {INACTIVE_TASK_BORDER};
+    border-title-align: center;
+    border-title-style: bold;
+    border-title-color: {TEXT_PRIMARY};
 }}
 
 #detail-summary {{
@@ -190,7 +205,7 @@ Button.group-chip.is-active {{
     min-height: 11;
     padding: 1 2;
     background: {PANEL_SHADE};
-    border: round {ACCENT_BORDER};
+    border: round {INACTIVE_TASK_BORDER};
 }}
 
 #status {{
@@ -396,6 +411,7 @@ LABEL_EDITOR_SCREEN_CSS = (
         "label-editor-shell",
         72,
         92,
+        screen_selector="LabelEditorScreen",
         overlay_opacity=80,
         include_text_area=True,
         actions_id="label-editor-actions",
@@ -424,11 +440,36 @@ LABEL_EDITOR_SCREEN_CSS = (
     border-title-style: bold;
 }}
 
+#label-editor-color > SelectCurrent {{
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: tall {INACTIVE_TASK_BORDER};
+}}
+
+#label-editor-color:focus > SelectCurrent {{
+    background: {INPUT_FOCUS_BG};
+    border: tall {INACTIVE_TASK_BORDER};
+}}
+
+#label-editor-color > SelectOverlay {{
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: tall {INACTIVE_TASK_BORDER};
+}}
+
+#label-editor-color > SelectOverlay:focus {{
+    background: {HEADER_BG};
+}}
+
 #label-editor-name:focus,
-#label-editor-color:focus,
 #label-editor-favorite:focus {{
     background: {INPUT_FOCUS_BG};
     border: tall {ACCENT_PRIMARY};
+}}
+
+#label-editor-color:focus {{
+    background: {INPUT_FOCUS_BG};
+    border: tall {INACTIVE_TASK_BORDER};
 }}
 
 #label-editor-actions {{
@@ -445,12 +486,50 @@ LABEL_EDITOR_SCREEN_CSS = (
 """
 )
 
-LABEL_MANAGER_SCREEN_CSS = build_modal_css(
-    "label-manager-shell",
-    88,
-    96,
-    overlay_opacity=78,
-    max_height="94%",
-    actions_id="label-manager-actions",
-    active_row_selector=".label-row.is-active",
+LABEL_MANAGER_SCREEN_CSS = (
+    build_modal_css(
+        "label-manager-shell",
+        88,
+        96,
+        screen_selector="LabelManagerScreen",
+        overlay_opacity=78,
+        max_height="94%",
+        actions_id="label-manager-actions",
+        active_row_selector=".label-row.is-active",
+    )
+    + f"""
+
+#label-manager-shell {{
+    min-width: 68;
+    max-height: 94%;
+    background: {PANEL_SHADE};
+    border: round {ACCENT_BORDER_BLURRED};
+    border-title-align: center;
+    border-title-color: {TEXT_PRIMARY};
+    border-title-style: bold;
+}}
+
+#label-manager-list {{
+    height: 16;
+    min-height: 8;
+    margin-top: 1;
+    padding: 0 1;
+    background: transparent;
+    color: {TEXT_DEFAULT};
+    border: none;
+}}
+
+#label-manager-actions {{
+    margin-top: 2;
+    border-top: heavy {INACTIVE_TASK_BORDER};
+    padding-top: 1;
+    align-horizontal: center;
+}}
+
+#label-manager-actions Button {{
+    width: auto;
+    min-width: 0;
+    padding: 0 2;
+}}
+"""
 )

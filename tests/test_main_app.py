@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import ui_styles as ui
+from textual.color import Color
 from textual.widgets import Markdown
 
 from app_types import LabelFormData, LabelMutationRequest, SelectionState, TaskFormData
@@ -151,9 +153,69 @@ class MainHelpersTests(unittest.TestCase):
             self.assertTrue(TodoistKanbanApp._should_accept_navigation_key(app, "up"))
             self.assertTrue(TodoistKanbanApp._should_accept_navigation_key(app, "down"))
 
+    def test_build_task_panel_uses_task_panel_widget_height(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        selected_group = object()
+        app.groups = [selected_group]
+        app.selection = SelectionState(task_index=3)
+        app._render_task_card = Mock()
+        app.query_one = Mock(return_value=SimpleNamespace(size=SimpleNamespace(height=17)))
+        app.CARD_TITLE_STYLE = "bold white"
+        app.MUTED_TEXT_STYLE = "grey50"
+        app.BORDER_STYLE = "red"
+
+        with patch("main.build_task_panel", return_value="panel") as build_task_panel_mock:
+            result = TodoistKanbanApp._build_task_panel(app)
+
+        self.assertEqual(result, "panel")
+        build_task_panel_mock.assert_called_once_with(
+            selected_group,
+            3,
+            17,
+            app._render_task_card,
+            title_style="bold white",
+            muted_style="grey50",
+            border_style="red",
+        )
+
+    def test_group_button_label_uses_navigation_markers(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+
+        self.assertEqual(
+            TodoistKanbanApp._group_button_label(
+                app,
+                SimpleNamespace(key="all", title="All Tasks", tasks=[object()]),
+            ),
+            "◎ All Tasks [1]",
+        )
+        self.assertEqual(
+            TodoistKanbanApp._group_button_label(
+                app,
+                SimpleNamespace(key="unlabeled", title="No Label", tasks=[]),
+            ),
+            "○ No Label [0]",
+        )
+        self.assertEqual(
+            TodoistKanbanApp._group_button_label(
+                app,
+                SimpleNamespace(key="label:1", title="urgent", tasks=[object(), object()]),
+            ),
+            "● @urgent [2]",
+        )
+
+    def test_next_task_scrolls_inspector_when_inspector_pane_is_active(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        app.active_pane = "inspector"
+        app._scroll_inspector = Mock()
+        app._is_main_screen_active = Mock(return_value=True)
+
+        TodoistKanbanApp.action_next_task(app)
+
+        app._scroll_inspector.assert_called_once_with(1)
+
 
 class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_navigation_keys_move_between_groups_and_tasks(self) -> None:
+    async def test_tab_navigation_cycles_panes_and_routes_keys(self) -> None:
         labels = [make_label("label-1", "alpha")]
         snapshot = make_snapshot(
             tasks=[
@@ -167,20 +229,116 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            self.assertEqual(app.active_pane, "tasks")
             self.assertEqual(app.selected_group.key, "all")
             self.assertEqual(app.selected_task.id, "task-1")
+            self.assertEqual(app.query_one("#group-rail").border_title, "Labels")
+            self.assertEqual(app.query_one("#group-rail").border_subtitle, "")
+            self.assertEqual(app.query_one("#detail-panel").border_title, "Inspector")
+            self.assertNotIn("ACTIVE", app.query_one("#task-panel").border_subtitle)
+            self.assertEqual(app.query_one("#detail-panel").border_subtitle, "")
 
-            await pilot.press("right")
+            await pilot.press("down")
+            self.assertEqual(app.selected_task.id, "task-2")
+
+            await pilot.press("left")
+            self.assertEqual(app.active_pane, "groups")
+            self.assertEqual(app.query_one("#group-rail").border_subtitle, "")
+
+            await pilot.pause(TodoistKanbanApp.NAVIGATION_REPEAT_INTERVAL + 0.02)
+            await pilot.press("down")
             self.assertEqual(app.selected_group.key, "unlabeled")
             self.assertEqual(app.selected_task.id, "task-2")
 
             await pilot.pause(TodoistKanbanApp.NAVIGATION_REPEAT_INTERVAL + 0.02)
-            await pilot.press("right")
+            await pilot.press("down")
             self.assertEqual(app.selected_group.key, "label:label-1")
             self.assertEqual(app.selected_task.id, "task-1")
 
+            await pilot.press("right")
+            self.assertEqual(app.active_pane, "tasks")
+            self.assertEqual(app.query_one("#group-rail").border_subtitle, "")
+            self.assertNotIn("ACTIVE", app.query_one("#task-panel").border_subtitle)
             await pilot.press("down")
             self.assertEqual(app.selected_task.id, "task-3")
+
+            await pilot.press("right")
+            self.assertEqual(app.active_pane, "inspector")
+
+    async def test_group_navigation_works_with_overflowing_group_strip(self) -> None:
+        labels = [make_label(f"label-{index}", f"label-{index}") for index in range(8)]
+        snapshot = make_snapshot(
+            tasks=[make_task(f"task-{index}", f"Task {index}", labels=[f"label-{index}"], order=index) for index in range(8)],
+            labels=labels,
+        )
+        app = SnapshotPilotApp(snapshot)
+
+        async with app.run_test(size=(70, 24)) as pilot:
+            await pilot.pause()
+            await pilot.press("left")
+            self.assertEqual(app.active_pane, "groups")
+
+            for _ in range(5):
+                await pilot.pause(TodoistKanbanApp.NAVIGATION_REPEAT_INTERVAL + 0.02)
+                await pilot.press("down")
+
+            self.assertEqual(app.selected_group.key, "label:label-3")
+
+    async def test_inspector_pane_keeps_task_selection_and_escape_returns_to_tasks(self) -> None:
+        description = "\n".join(f"Line {index}" for index in range(80))
+        app = SnapshotPilotApp(
+            make_snapshot(
+                tasks=[
+                    make_task("task-1", "Alpha", description=description, order=1),
+                    make_task("task-2", "Beta", order=2),
+                ],
+                labels=[],
+            )
+        )
+
+        async with app.run_test(size=(70, 14)) as pilot:
+            await pilot.pause()
+
+            await pilot.press("tab")
+            self.assertEqual(app.active_pane, "inspector")
+            self.assertEqual(app.query_one("#detail-panel").border_subtitle, "")
+
+            for _ in range(3):
+                await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(app.selected_task.id, "task-1")
+
+            await pilot.press("escape")
+            self.assertEqual(app.active_pane, "tasks")
+            await pilot.press("down")
+            self.assertEqual(app.selected_task.id, "task-2")
+
+    async def test_active_pane_uses_heavy_border(self) -> None:
+        app = SnapshotPilotApp(make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            group_rail = app.query_one("#group-rail")
+            task_panel = app.query_one("#task-panel")
+            detail_panel = app.query_one("#detail-panel")
+            self.assertEqual(group_rail.styles.border.top[0], "round")
+            self.assertEqual(task_panel.styles.border.top[0], "heavy")
+            self.assertEqual(detail_panel.styles.border.top[0], "round")
+
+            await pilot.press("right")
+            self.assertEqual(task_panel.styles.border.top[0], "round")
+            self.assertEqual(detail_panel.styles.border.top[0], "heavy")
+
+    async def test_inactive_panes_use_grayish_border(self) -> None:
+        app = SnapshotPilotApp(make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            group_rail = app.query_one("#group-rail")
+            detail_panel = app.query_one("#detail-panel")
+
+            self.assertEqual(group_rail.styles.border.top[1], Color.parse(ui.INACTIVE_TASK_BORDER))
+            self.assertEqual(detail_panel.styles.border.top[1], Color.parse(ui.INACTIVE_TASK_BORDER))
 
     async def test_new_task_binding_opens_editor(self) -> None:
         app = SnapshotPilotApp(make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]))

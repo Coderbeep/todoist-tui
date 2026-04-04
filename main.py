@@ -10,10 +10,11 @@ from typing import Callable
 
 import httpx
 from rich.console import RenderableType
+from textual.actions import SkipAction
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, HorizontalScroll, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual import events
 from textual.widgets import Button, Markdown, Static
 from textual.widgets._footer import Footer as BaseFooter, FooterKey, FooterLabel, KeyGroup
@@ -173,10 +174,13 @@ class TodoistKanbanApp(App[None]):
     BORDER_STYLE = ui.ACCENT_BORDER
 
     BINDINGS = [
-        Binding("left,h", "previous_group", "Prev Group", key_display="←/h"),
-        Binding("right,l", "next_group", "Next Group", key_display="→/l"),
-        Binding("up,k", "previous_task", "Prev Task", key_display="↑/k"),
-        Binding("down,j", "next_task", "Next Task", key_display="↓/j"),
+        Binding("tab", "focus_next_pane", "Next Pane", show=False, priority=True),
+        Binding("shift+tab", "focus_previous_pane", "Prev Pane", show=False, priority=True),
+        Binding("right", "focus_next_pane", "Next Pane", show=False, priority=True),
+        Binding("left", "focus_previous_pane", "Prev Pane", show=False, priority=True),
+        Binding("escape", "focus_tasks", "Focus Tasks", show=False, priority=True),
+        Binding("up,k", "previous_task", "Prev", key_display="↑/k", priority=True),
+        Binding("down,j", "next_task", "Next", key_display="↓/j", priority=True),
         Binding("n", "new_task", "Add"),
         Binding("e,enter", "edit_task", "Edit", key_display="e/Enter"),
         Binding("space", "complete_task", "Complete"),
@@ -190,6 +194,7 @@ class TodoistKanbanApp(App[None]):
     ENABLE_COMMAND_PALETTE = False
     NAVIGATION_REPEAT_INTERVAL = 0.12
     NAVIGATION_KEYS = {"left", "right", "up", "down", "h", "j", "k", "l"}
+    PANE_ORDER = ("groups", "tasks", "inspector")
 
     def __init__(self, token: str, due_lang: str = "en") -> None:
         super().__init__()
@@ -204,6 +209,7 @@ class TodoistKanbanApp(App[None]):
         self.label_name_colors: dict[str, str] = {}
         self.groups: list[LabelGroup] = []
         self.selection = SelectionState()
+        self.active_pane = "tasks"
         self.status = "Connecting to Todoist..."
         self.busy = False
         self._group_buttons: dict[str, Button] = {}
@@ -215,9 +221,9 @@ class TodoistKanbanApp(App[None]):
     def compose(self) -> ComposeResult:
         with Container(id="app-shell"):
             yield Static(id="workspace-header")
-            with HorizontalScroll(id="group-rail"):
-                yield Horizontal(id="group-strip")
             with Horizontal(id="content"):
+                with VerticalScroll(id="group-rail"):
+                    yield Vertical(id="group-strip")
                 yield Static(id="task-panel")
                 with Vertical(id="detail-stack"):
                     with VerticalScroll(id="detail-panel"):
@@ -267,6 +273,8 @@ class TodoistKanbanApp(App[None]):
         self._refresh_group_and_task_views()
 
     def on_key(self, event: events.Key) -> None:
+        if not self._is_main_screen_active():
+            return
         key = event.key.lower()
         if key not in self.NAVIGATION_KEYS:
             return
@@ -287,6 +295,10 @@ class TodoistKanbanApp(App[None]):
         return True
 
     def action_previous_group(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        if self.active_pane != "groups":
+            return
         if self.selection.group_index == 0:
             return
         self.selection.group_index -= 1
@@ -294,6 +306,10 @@ class TodoistKanbanApp(App[None]):
         self._refresh_group_and_task_views()
 
     def action_next_group(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        if self.active_pane != "groups":
+            return
         if self.selection.group_index >= len(self.groups) - 1:
             return
         self.selection.group_index += 1
@@ -301,16 +317,53 @@ class TodoistKanbanApp(App[None]):
         self._refresh_group_and_task_views()
 
     def action_previous_task(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        if self.active_pane == "groups":
+            self.action_previous_group()
+            return
+        if self.active_pane == "inspector":
+            self._scroll_inspector(-1)
+            return
+        if self.active_pane != "tasks":
+            return
         if self.selection.task_index == 0:
             return
         self.selection.task_index -= 1
         self._refresh_task_views()
 
     def action_next_task(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        if self.active_pane == "groups":
+            self.action_next_group()
+            return
+        if self.active_pane == "inspector":
+            self._scroll_inspector(1)
+            return
+        if self.active_pane != "tasks":
+            return
         if self.selection.task_index >= len(self.selected_group.tasks) - 1:
             return
         self.selection.task_index += 1
         self._refresh_task_views()
+
+    def action_focus_next_pane(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        index = self.PANE_ORDER.index(self.active_pane)
+        self._set_active_pane(self.PANE_ORDER[(index + 1) % len(self.PANE_ORDER)])
+
+    def action_focus_previous_pane(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        index = self.PANE_ORDER.index(self.active_pane)
+        self._set_active_pane(self.PANE_ORDER[(index - 1) % len(self.PANE_ORDER)])
+
+    def action_focus_tasks(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        self._set_active_pane("tasks")
 
     def action_new_task(self) -> None:
         if self.busy or self.inbox_project_id is None:
@@ -632,7 +685,7 @@ class TodoistKanbanApp(App[None]):
         self._clamp_selection()
 
     async def _sync_group_strip(self) -> None:
-        strip = self.query_one("#group-strip", Horizontal)
+        strip = self.query_one("#group-strip", Vertical)
         desired_keys = [group.key for group in self.groups]
 
         obsolete_keys = [key for key in self._group_buttons if key not in desired_keys]
@@ -649,7 +702,7 @@ class TodoistKanbanApp(App[None]):
 
         for group in self.groups:
             if group.key not in self._group_buttons:
-                button = Button(group_label(group), classes="group-chip")
+                button = Button(self._group_button_label(group), classes="group-chip")
                 self._group_buttons[group.key] = button
                 await strip.mount(button)
 
@@ -701,7 +754,7 @@ class TodoistKanbanApp(App[None]):
         task_panel = self.query_one("#task-panel", Static)
         task_panel.border_title = self._task_panel_title(selected_group)
         task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
-        task_panel.styles.border = ("round", ui.ACCENT_BORDER)
+        self._refresh_pane_chrome()
         self._update_group_buttons()
 
     def _refresh_header(self) -> None:
@@ -726,23 +779,85 @@ class TodoistKanbanApp(App[None]):
             button = self._group_buttons.get(group.key)
             if button is None:
                 continue
-            button.label = group_label(group)
-            button.styles.color = group.accent
-            button.styles.border = ("round", group.accent)
+            button.label = self._group_button_label(group)
             if index == self.selection.group_index:
                 button.add_class("is-active")
-                button.styles.background = ui.SURFACE_BG
+                button.styles.border = ("none", ui.PANEL_SHADE)
+                button.styles.border_left = (
+                    "heavy",
+                    group.accent if self.active_pane == "groups" else ui.INACTIVE_TASK_BORDER,
+                )
+                button.styles.background = (
+                    ui.SURFACE_BG if self.active_pane == "groups" else ui.TAB_BG
+                )
+                button.styles.color = group.accent
                 button.styles.text_style = "bold"
+                if self.active_pane == "groups":
+                    button.scroll_visible(animate=False, immediate=True)
             else:
                 button.remove_class("is-active")
-                button.styles.background = ui.TAB_BG
+                button.styles.border = ("none", ui.PANEL_SHADE)
+                button.styles.background = ui.PANEL_SHADE
+                button.styles.color = group.accent
                 button.styles.text_style = "none"
 
+    def _group_button_label(self, group: LabelGroup) -> str:
+        if group.key == "all":
+            marker = "◎"
+        elif group.key == "unlabeled":
+            marker = "○"
+        else:
+            marker = "●"
+        return f"{marker} {group_label(group)}"
+
+    def _refresh_pane_chrome(self) -> None:
+        group_rail = self.query_one("#group-rail", VerticalScroll)
+        task_panel = self.query_one("#task-panel", Static)
+        detail_panel = self.query_one("#detail-panel", VerticalScroll)
+
+        group_rail.border_title = "Labels"
+        group_rail.border_subtitle = ""
+        group_rail.styles.background = ui.PANEL_SHADE
+        group_rail.styles.border = (
+            ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "groups" else ("round", ui.INACTIVE_TASK_BORDER)
+        )
+
+        task_panel.border_subtitle = self._task_panel_subtitle(self.selected_group)
+        task_panel.styles.background = ui.PANEL_SHADE
+        task_panel.styles.border = (
+            ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "tasks" else ("round", ui.INACTIVE_TASK_BORDER)
+        )
+
+        detail_panel.border_title = "Inspector"
+        detail_panel.border_subtitle = ""
+        detail_panel.styles.background = ui.PANEL_SHADE
+        detail_panel.styles.border = (
+            ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "inspector" else ("round", ui.INACTIVE_TASK_BORDER)
+        )
+
+    def _set_active_pane(self, pane: str) -> None:
+        self.active_pane = pane
+        if self.is_mounted:
+            self._refresh_pane_chrome()
+            self._update_group_buttons()
+
+    def _scroll_inspector(self, direction: int) -> None:
+        detail_panel = self.query_one("#detail-panel", VerticalScroll)
+        if direction < 0:
+            detail_panel.scroll_up(animate=False, immediate=True)
+        else:
+            detail_panel.scroll_down(animate=False, immediate=True)
+
+    def _is_main_screen_active(self) -> bool:
+        return getattr(self.screen, "id", None) == "_default"
+
     def _build_task_panel(self) -> RenderableType:
+        task_panel = self.query_one("#task-panel", Static)
+        available_height = task_panel.size.height or self.size.height
         return build_task_panel(
             self.selected_group,
             self.selection.task_index,
-            self.size.height,
+            available_height,
             self._render_task_card,
             title_style=self.CARD_TITLE_STYLE,
             muted_style=self.MUTED_TEXT_STYLE,
