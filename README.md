@@ -41,7 +41,7 @@ uv run todoist-tui
 
 ## Install
 
-Install the published CLI with:
+From the repository root, install the CLI as a local tool:
 
 ```bash
 uv tool install .
