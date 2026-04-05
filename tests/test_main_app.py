@@ -1,29 +1,38 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import ui_styles as ui
+from md_sync import SyncAction, SyncPlan, SyncPreview, TaskPayload, load_markdown_notes, load_sync_records
 from textual.color import Color
 from textual.widgets import Markdown
 
 from app_types import LabelFormData, LabelMutationRequest, SelectionState, TaskFormData
 from main import TodoistGateway, TodoistKanbanApp, parse_args, resolve_token
-from screens import ConfirmScreen, LabelManagerScreen, TaskEditorScreen
+from screens import ConfirmScreen, LabelManagerScreen, SyncPreviewScreen, TaskEditorScreen
 from tests.support import make_due, make_label, make_snapshot, make_task
 
 
 class SnapshotPilotApp(TodoistKanbanApp):
-    def __init__(self, snapshot) -> None:
+    def __init__(self, snapshot, *, sync_preview: SyncPreview | None = None, sync_error: str | None = None) -> None:
         super().__init__("test-token")
         self._snapshot = snapshot
+        self._sync_preview = sync_preview
+        self._sync_error = sync_error
         self.gateway = SimpleNamespace(close=lambda: None)
         self.refresh_requests = 0
 
     async def on_mount(self) -> None:
         self._refresh_ui()
-        await self._apply_snapshot(self._snapshot)
+        await self._apply_snapshot(
+            self._snapshot,
+            sync_preview=self._sync_preview,
+            sync_error=self._sync_error,
+        )
 
     def load_snapshot(self) -> None:
         self.refresh_requests += 1
@@ -31,10 +40,11 @@ class SnapshotPilotApp(TodoistKanbanApp):
 
 class MainHelpersTests(unittest.TestCase):
     def test_parse_args_reads_cli_values(self) -> None:
-        args = parse_args(["--token", "abc", "--due-lang", "pl"])
+        args = parse_args(["--token", "abc", "--due-lang", "pl", "--notes-root", "/tmp/notes"])
 
         self.assertEqual(args.token, "abc")
         self.assertEqual(args.due_lang, "pl")
+        self.assertEqual(args.notes_root, "/tmp/notes")
 
     def test_resolve_token_prefers_cli_token(self) -> None:
         with patch.dict("os.environ", {"TODOIST_API_TOKEN": "env-token"}, clear=True):
@@ -212,6 +222,49 @@ class MainHelpersTests(unittest.TestCase):
         TodoistKanbanApp.action_next_task(app)
 
         app._scroll_inspector.assert_called_once_with(1)
+
+    def test_finish_sync_preview_dispatches_worker_for_selected_action(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        app.run_sync_action = Mock()
+        app._refresh_status = Mock()
+        app.status = ""
+        action = SyncAction(kind="create_todoist", sync_id="sync-1", reason="Apply it.")
+
+        TodoistKanbanApp._finish_sync_preview(app, action)
+
+        app.run_sync_action.assert_called_once_with(action)
+
+    def test_apply_sync_action_creates_markdown_note_and_persists_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            notes_root = Path(tmp_dir) / "notes"
+            state_path = notes_root / ".todoist-sync-state.json"
+
+            app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+            app.sync_root = notes_root
+            app.sync_state_path = state_path
+            app.gateway = SimpleNamespace()
+
+            action = SyncAction(
+                kind="create_markdown",
+                sync_id="sync-1",
+                reason="Create local note.",
+                payload=TaskPayload("Ship feature", "Details", ("work",), "friday"),
+                todoist_id="todoist-1",
+            )
+
+            message = TodoistKanbanApp._apply_sync_action(app, action)
+
+            self.assertIn("Created markdown note", message)
+            notes = load_markdown_notes(notes_root)
+            self.assertEqual(len(notes), 1)
+            self.assertEqual(notes[0].payload.title, "Ship feature")
+            self.assertEqual(notes[0].sync_id, "sync-1")
+            self.assertEqual(notes[0].todoist_id, "todoist-1")
+
+            records = load_sync_records(state_path)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].sync_id, "sync-1")
+            self.assertEqual(records[0].todoist_id, "todoist-1")
 
 
 class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -446,3 +499,53 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             markdown = app.query_one("#detail-markdown", Markdown)
             self.assertEqual(markdown._markdown, "# Heading\n\n- item")
+
+    async def test_sync_binding_opens_sync_preview_screen(self) -> None:
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=1,
+            record_count=0,
+            plan=SyncPlan(
+                actions=(
+                    SyncAction(
+                        kind="create_todoist",
+                        sync_id="sync-1",
+                        reason="Create a remote task.",
+                    ),
+                ),
+            ),
+        )
+        app = SnapshotPilotApp(
+            make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]),
+            sync_preview=preview,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+
+            self.assertIsInstance(app.screen, SyncPreviewScreen)
+
+    async def test_snapshot_status_includes_sync_summary(self) -> None:
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=2,
+            record_count=1,
+            plan=SyncPlan(
+                actions=(SyncAction(kind="create_todoist", sync_id="sync-1", reason="Create it."),),
+                conflicts=(SyncAction(kind="conflict", sync_id="sync-2", reason="Resolve it."),),
+            ),
+        )
+        app = SnapshotPilotApp(
+            make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]),
+            sync_preview=preview,
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            self.assertIn("Markdown sync preview:", app.status)
+            self.assertIn("2 note(s), 1 record(s), 1 action(s), 1 conflict(s)", app.status)

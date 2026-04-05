@@ -533,3 +533,66 @@ LABEL_MANAGER_SCREEN_CSS = (
 }}
 """
 )
+
+SYNC_PREVIEW_SCREEN_CSS = (
+    build_modal_css(
+        "sync-preview-shell",
+        96,
+        120,
+        screen_selector="SyncPreviewScreen",
+        overlay_opacity=78,
+        max_height="94%",
+        actions_id="sync-preview-actions",
+    )
+    + f"""
+
+#sync-preview-shell {{
+    min-width: 72;
+    max-height: 94%;
+    background: {PANEL_SHADE};
+    border: round {ACCENT_BORDER_BLURRED};
+    border-title-align: center;
+    border-title-color: {TEXT_PRIMARY};
+    border-title-style: bold;
+}}
+
+#sync-preview-summary {{
+    height: auto;
+    margin-top: 1;
+    margin-bottom: 1;
+    color: {TEXT_MUTED};
+}}
+
+#sync-preview-list {{
+    height: auto;
+    min-height: 4;
+    margin-bottom: 1;
+    padding: 0 1;
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: round {INACTIVE_TASK_BORDER};
+}}
+
+#sync-preview-markdown {{
+    height: 1fr;
+    min-height: 12;
+    padding: 0 1;
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: round {INACTIVE_TASK_BORDER};
+}}
+
+#sync-preview-actions {{
+    margin-top: 1;
+    border-top: heavy {INACTIVE_TASK_BORDER};
+    padding-top: 1;
+    align-horizontal: right;
+}}
+
+#sync-preview-actions Button {{
+    width: auto;
+    min-width: 0;
+    padding: 0 2;
+}}
+"""
+)

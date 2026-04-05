@@ -7,13 +7,14 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
-from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea
+from textual.widgets import Button, Checkbox, Input, Markdown, Select, Static, TextArea
 from todoist_api_python.models import Label as TodoistLabel
 from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelFormData, LabelMutationRequest, TaskFormData
 from app_utils import parse_label_names
+from md_sync import SyncAction, SyncPreview, summarize_sync_preview
 from views import build_label_manager_rows
 
 
@@ -417,3 +418,181 @@ class LabelManagerScreen(ModalScreen[LabelMutationRequest | None]):
     def _refresh_list(self) -> None:
         label_list = self.query_one("#label-manager-list", Static)
         label_list.update(build_label_manager_rows(self.labels, self.label_index))
+
+
+class SyncPreviewScreen(ModalScreen[SyncAction | None]):
+    CSS = ui.SYNC_PREVIEW_SCREEN_CSS
+
+    BINDINGS = [
+        Binding("up,k", "previous_action", "Prev", show=False),
+        Binding("down,j", "next_action", "Next", show=False),
+        Binding("enter,a", "apply_action", "Apply", show=False),
+        Binding("escape,q,s", "close_screen", "Close", show=False),
+    ]
+
+    def __init__(self, preview: SyncPreview, error: str | None = None) -> None:
+        super().__init__()
+        self.preview = preview
+        self.error = error
+        self.action_index = 0
+
+    def compose(self) -> ComposeResult:
+        summary = Static(id="sync-preview-summary")
+        action_list = Static(id="sync-preview-list")
+        markdown = Markdown(id="sync-preview-markdown", open_links=False)
+        with Container(id="sync-preview-shell") as shell:
+            yield summary
+            yield action_list
+            yield markdown
+            with Horizontal(id="sync-preview-actions"):
+                yield Button(Text("Apply [Enter]"), id="sync-preview-apply", compact=True)
+                yield Button(Text("Close [Esc]"), id="sync-preview-close", compact=True)
+        shell.border_title = "Markdown sync preview"
+
+    def on_mount(self) -> None:
+        self._refresh_preview()
+
+    @property
+    def selected_action(self) -> SyncAction | None:
+        actions = self.preview.plan.actions
+        if not actions:
+            return None
+        self.action_index = max(0, min(self.action_index, len(actions) - 1))
+        return actions[self.action_index]
+
+    def action_close_screen(self) -> None:
+        self.dismiss(None)
+
+    def action_previous_action(self) -> None:
+        if self.action_index == 0:
+            return
+        self.action_index -= 1
+        self._refresh_preview()
+
+    def action_next_action(self) -> None:
+        if self.action_index >= len(self.preview.plan.actions) - 1:
+            return
+        self.action_index += 1
+        self._refresh_preview()
+
+    def action_apply_action(self) -> None:
+        action = self.selected_action
+        if action is None:
+            return
+        self.dismiss(action)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "sync-preview-apply":
+            self.action_apply_action()
+            return
+        if event.button.id == "sync-preview-close":
+            self.dismiss(None)
+
+    def _refresh_preview(self) -> None:
+        self.query_one("#sync-preview-summary", Static).update(self._summary_text())
+        self.query_one("#sync-preview-list", Static).update(self._list_text())
+        self.query_one("#sync-preview-markdown", Markdown).update(self._markdown_text())
+
+    def _summary_text(self) -> str:
+        summary = summarize_sync_preview(self.preview)
+        suffix = f"  Error: {self.error}" if self.error else ""
+        return (
+            f"Notes root: {self.preview.notes_root}\n"
+            f"State file: {self.preview.state_path}\n"
+            f"Snapshot: {summary}{suffix}"
+        )
+
+    def _markdown_text(self) -> str:
+        selected = self.selected_action
+        lines = [
+            "## Summary",
+            "",
+            f"- Notes root: `{self.preview.notes_root}`",
+            f"- State file: `{self.preview.state_path}`",
+            f"- Notes discovered: `{self.preview.note_count}`",
+            f"- Persisted sync records: `{self.preview.record_count}`",
+            f"- Planned actions: `{len(self.preview.plan.actions)}`",
+            f"- Conflicts: `{len(self.preview.plan.conflicts)}`",
+        ]
+
+        if self.error:
+            lines.extend(
+                [
+                    "",
+                    "## Error",
+                    "",
+                    self.error,
+                ]
+            )
+
+        if selected is not None:
+            lines.extend(
+                [
+                    "",
+                    "## Selected Action",
+                    "",
+                    f"- Kind: `{selected.kind}`",
+                    f"- Sync id: `{selected.sync_id}`",
+                ]
+            )
+            if selected.payload is not None:
+                lines.append(f"- Title: `{selected.payload.title}`")
+            if selected.markdown_path is not None:
+                lines.append(f"- Markdown: `{selected.markdown_path}`")
+            if selected.todoist_id is not None:
+                lines.append(f"- Todoist: `{selected.todoist_id}`")
+            if selected.details:
+                lines.append(
+                    "- Details: "
+                    + ", ".join(f"`{key}={value}`" for key, value in sorted(selected.details.items()))
+                )
+            lines.extend(["", selected.reason])
+
+        lines.extend(self._action_section("Conflicts", self.preview.plan.conflicts))
+        if not selected:
+            lines.extend(self._action_section("Actions", self.preview.plan.actions))
+
+        if not self.preview.plan.actions and not self.preview.plan.conflicts and not self.error:
+            lines.extend(
+                [
+                    "",
+                    "## Result",
+                    "",
+                    "No changes are currently needed.",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    def _list_text(self) -> str:
+        if not self.preview.plan.actions:
+            return "No executable actions."
+
+        lines = ["Planned actions:"]
+        for index, action in enumerate(self.preview.plan.actions):
+            marker = ">" if index == self.action_index else " "
+            title = action.payload.title if action.payload is not None else action.todoist_id or action.sync_id
+            lines.append(f"{marker} {index + 1}. {action.kind} :: {title}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _action_section(title: str, actions: tuple[SyncAction, ...]) -> list[str]:
+        if not actions:
+            return []
+
+        lines = ["", f"## {title}", ""]
+        for index, action in enumerate(actions, start=1):
+            lines.append(f"{index}. `{action.kind}` for `{action.sync_id}`")
+            if action.payload is not None:
+                lines.append(f"   Title: `{action.payload.title}`")
+            if action.markdown_path is not None:
+                lines.append(f"   Markdown: `{action.markdown_path}`")
+            if action.todoist_id is not None:
+                lines.append(f"   Todoist: `{action.todoist_id}`")
+            if action.details:
+                lines.append(
+                    "   Details: "
+                    + ", ".join(f"`{key}={value}`" for key, value in sorted(action.details.items()))
+                )
+            lines.append(f"   Reason: {action.reason}")
+        return lines
