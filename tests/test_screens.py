@@ -76,6 +76,22 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(app.result)
 
+    async def test_confirm_screen_matches_modal_chrome(self) -> None:
+        app = ModalHostApp(ConfirmScreen("Complete task", "Proceed?", confirm_label="Complete"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            shell = screen.query_one("#confirm-shell", Container)
+            message = screen.query_one("#confirm-message", Static)
+            cancel_button = screen.query_one("#confirm-no", Button)
+            confirm_button = screen.query_one("#confirm-yes", Button)
+
+            self.assertEqual(shell.border_title, "Complete task")
+            self.assertEqual(message.content, "Proceed?")
+            self.assertTrue(cancel_button.compact)
+            self.assertTrue(confirm_button.compact)
+
     async def test_task_editor_escape_cancels(self) -> None:
         labels = [make_label("label-1", "alpha")]
         app = ModalHostApp(TaskEditorScreen(None, labels))

@@ -329,9 +329,40 @@ CONFIRM_SCREEN_CSS = build_modal_css(
     "confirm-shell",
     68,
     92,
+    screen_selector="ConfirmScreen",
     overlay_opacity=78,
     actions_id="confirm-actions",
-)
+) + f"""
+
+#confirm-shell {{
+    min-width: 52;
+    max-height: 94%;
+    background: {PANEL_SHADE};
+    border: round {ACCENT_BORDER_BLURRED};
+    border-title-align: center;
+    border-title-color: {TEXT_PRIMARY};
+    border-title-style: bold;
+}}
+
+#confirm-message {{
+    margin-top: 1;
+    margin-bottom: 1;
+    color: {TEXT_MUTED};
+}}
+
+#confirm-actions {{
+    margin-top: 2;
+    border-top: heavy {INACTIVE_TASK_BORDER};
+    padding-top: 1;
+    align-horizontal: right;
+}}
+
+#confirm-actions Button {{
+    width: auto;
+    min-width: 0;
+    padding: 0 2;
+}}
+"""
 
 TASK_EDITOR_SCREEN_CSS = (
     build_modal_css(

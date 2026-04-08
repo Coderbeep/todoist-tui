@@ -76,12 +76,22 @@ class ConfirmScreen(ModalScreen[bool]):
         self._confirm_variant = confirm_variant
 
     def compose(self) -> ComposeResult:
-        with Container(id="confirm-shell"):
-            yield Static(self._title, id="confirm-title")
-            yield Static(self._message, id="confirm-message")
-            with Horizontal(id="confirm-actions"):
-                yield Button("Cancel", id="confirm-no")
-                yield Button(self._confirm_label, id="confirm-yes", variant=self._confirm_variant)
+        shell = Container(
+            Static(self._message, id="confirm-message"),
+            Horizontal(
+                Button(Text("Cancel [N/Esc]"), id="confirm-no", compact=True),
+                Button(
+                    Text(f"{self._confirm_label} [Y/Enter]"),
+                    id="confirm-yes",
+                    variant=self._confirm_variant,
+                    compact=True,
+                ),
+                id="confirm-actions",
+            ),
+            id="confirm-shell",
+        )
+        shell.border_title = self._title
+        yield shell
 
     def action_cancel(self) -> None:
         self.dismiss(False)
