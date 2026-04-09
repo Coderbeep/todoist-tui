@@ -617,8 +617,13 @@ class TodoistKanbanApp(App[None]):
         self._set_busy(True, "Refreshing Inbox tasks and labels...")
         try:
             snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
-            sync_preview, sync_error = await self._load_sync_preview(snapshot.tasks)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
             await self._apply_snapshot(snapshot, sync_preview=sync_preview, sync_error=sync_error)
+            if sync_messages:
+                message = self._auto_sync_status(sync_messages, sync_preview, sync_error)
+                self.notify(message, title="Markdown sync", severity="information", markup=False)
+                self.status = message
+                self._refresh_status()
         except Exception as error:
             self._handle_error("Couldn't load Todoist data.", error)
         finally:
@@ -634,7 +639,7 @@ class TodoistKanbanApp(App[None]):
         try:
             result = await asyncio.to_thread(operation)
             snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
-            sync_preview, sync_error = await self._load_sync_preview(snapshot.tasks)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
             await self._apply_snapshot(
                 snapshot,
                 selected_task_id=result.task_id,
@@ -642,13 +647,20 @@ class TodoistKanbanApp(App[None]):
                 sync_preview=sync_preview,
                 sync_error=sync_error,
             )
-            self.status = result.message
+            self.status = self._combine_status(result.message, sync_messages, sync_preview, sync_error)
             self.notify(
                 result.message,
                 title="Todoist",
                 severity="information",
                 markup=False,
             )
+            if sync_messages:
+                self.notify(
+                    self._auto_sync_status(sync_messages, sync_preview, sync_error),
+                    title="Markdown sync",
+                    severity="information",
+                    markup=False,
+                )
             self._refresh_status()
         except Exception as error:
             self._handle_error("Todoist request failed.", error)
@@ -709,21 +721,49 @@ class TodoistKanbanApp(App[None]):
         except Exception as error:
             return (self._empty_sync_preview(), format_error(error))
 
+    async def _converge_sync(
+        self,
+        snapshot: TodoistSnapshot,
+    ) -> tuple[TodoistSnapshot, SyncPreview, str | None, list[str]]:
+        current_snapshot = snapshot
+        sync_preview, sync_error = await self._load_sync_preview(current_snapshot.tasks)
+        messages: list[str] = []
+
+        for _ in range(100):
+            if sync_error or not sync_preview.plan.actions:
+                return current_snapshot, sync_preview, sync_error, messages
+
+            messages.extend(await asyncio.to_thread(self._apply_sync_actions, sync_preview.plan.actions))
+            current_snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
+            sync_preview, sync_error = await self._load_sync_preview(current_snapshot.tasks)
+
+        raise RuntimeError("Automatic markdown sync did not converge after 100 passes.")
+
     @work(exclusive=True, group="todoist", exit_on_error=False)
     async def run_sync_action(self, action: SyncAction) -> None:
         self._set_busy(True, f"Applying sync action: {action.kind}...")
         try:
             message = await asyncio.to_thread(self._apply_sync_action, action)
             snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
-            sync_preview, sync_error = await self._load_sync_preview(snapshot.tasks)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
             await self._apply_snapshot(snapshot, sync_preview=sync_preview, sync_error=sync_error)
-            self.status = message
+            self.status = self._combine_status(message, sync_messages, sync_preview, sync_error)
             self.notify(message, title="Markdown sync", severity="information", markup=False)
+            if sync_messages:
+                self.notify(
+                    self._auto_sync_status(sync_messages, sync_preview, sync_error),
+                    title="Markdown sync",
+                    severity="information",
+                    markup=False,
+                )
             self._refresh_status()
         except Exception as error:
             self._handle_error("Sync action failed.", error)
         finally:
             self._set_busy(False)
+
+    def _apply_sync_actions(self, actions: tuple[SyncAction, ...]) -> list[str]:
+        return [self._apply_sync_action(action) for action in actions]
 
     def _apply_sync_action(self, action: SyncAction) -> str:
         if action.kind == CONFLICT:
@@ -908,6 +948,30 @@ class TodoistKanbanApp(App[None]):
         if self.sync_preview_error:
             return f"Markdown sync preview unavailable. Press s for details."
         return f"Markdown sync preview: {summarize_sync_preview(self.sync_preview)}. Press s."
+
+    @staticmethod
+    def _auto_sync_status(
+        sync_messages: list[str],
+        sync_preview: SyncPreview,
+        sync_error: str | None,
+    ) -> str:
+        suffix = ""
+        if sync_error:
+            suffix = " Sync preview unavailable after automatic sync."
+        elif sync_preview.plan.conflicts:
+            suffix = f" {len(sync_preview.plan.conflicts)} conflict(s) still need manual resolution."
+        return f"Applied {len(sync_messages)} sync action(s) automatically.{suffix}"
+
+    def _combine_status(
+        self,
+        base_message: str,
+        sync_messages: list[str],
+        sync_preview: SyncPreview,
+        sync_error: str | None,
+    ) -> str:
+        if not sync_messages:
+            return base_message
+        return f"{base_message} {self._auto_sync_status(sync_messages, sync_preview, sync_error)}"
 
     def _preferred_task_group_key(self, label_names: list[str]) -> str:
         normalized = {name.casefold() for name in label_names}

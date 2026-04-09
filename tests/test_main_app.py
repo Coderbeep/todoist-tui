@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import ui_styles as ui
 from md_sync import SyncAction, SyncPlan, SyncPreview, TaskPayload, load_markdown_notes, load_sync_records
@@ -266,8 +266,72 @@ class MainHelpersTests(unittest.TestCase):
             self.assertEqual(records[0].sync_id, "sync-1")
             self.assertEqual(records[0].todoist_id, "todoist-1")
 
+    def test_apply_sync_actions_runs_each_action_in_order(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        seen: list[str] = []
+        app._apply_sync_action = Mock(side_effect=lambda action: seen.append(action.sync_id) or f"applied:{action.sync_id}")
+
+        actions = (
+            SyncAction(kind="create_markdown", sync_id="sync-1", reason="First"),
+            SyncAction(kind="update_markdown", sync_id="sync-2", reason="Second"),
+        )
+
+        messages = TodoistKanbanApp._apply_sync_actions(app, actions)
+
+        self.assertEqual(messages, ["applied:sync-1", "applied:sync-2"])
+        self.assertEqual(seen, ["sync-1", "sync-2"])
+
+    def test_auto_sync_status_mentions_remaining_conflicts(self) -> None:
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=1,
+            record_count=1,
+            plan=SyncPlan(
+                conflicts=(SyncAction(kind="conflict", sync_id="sync-1", reason="Resolve me."),),
+            ),
+        )
+
+        message = TodoistKanbanApp._auto_sync_status(["Applied one."], preview, None)
+
+        self.assertIn("Applied 1 sync action(s) automatically.", message)
+        self.assertIn("1 conflict(s) still need manual resolution.", message)
+
 
 class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_converge_sync_applies_actions_until_only_conflicts_remain(self) -> None:
+        snapshot = make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[])
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        app.gateway = SimpleNamespace(load_snapshot=Mock(side_effect=[snapshot]))
+        first_preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=1,
+            record_count=0,
+            plan=SyncPlan(
+                actions=(SyncAction(kind="create_markdown", sync_id="sync-1", reason="Create local copy."),),
+            ),
+        )
+        final_preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=1,
+            record_count=1,
+            plan=SyncPlan(
+                conflicts=(SyncAction(kind="conflict", sync_id="sync-1", reason="Resolve manually."),),
+            ),
+        )
+        app._load_sync_preview = AsyncMock(side_effect=[(first_preview, None), (final_preview, None)])
+        app._apply_sync_actions = Mock(return_value=["Created markdown note for 'Alpha'."])
+
+        resolved_snapshot, resolved_preview, resolved_error, messages = await TodoistKanbanApp._converge_sync(app, snapshot)
+
+        self.assertIs(resolved_snapshot, snapshot)
+        self.assertIs(resolved_preview, final_preview)
+        self.assertIsNone(resolved_error)
+        self.assertEqual(messages, ["Created markdown note for 'Alpha'."])
+        app._apply_sync_actions.assert_called_once_with(first_preview.plan.actions)
+
     async def test_tab_navigation_cycles_panes_and_routes_keys(self) -> None:
         labels = [make_label("label-1", "alpha")]
         snapshot = make_snapshot(
