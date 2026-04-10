@@ -25,7 +25,7 @@ from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelFormData, LabelGroup, LabelMutationRequest, MutationResult, SelectionState, TaskFormData, TodoistSnapshot
-from app_utils import build_label_groups, compact_text, flatten_pages, format_error
+from app_utils import build_label_groups, compact_text, flatten_pages, format_error, task_window
 from md_sync import (
     BIND,
     CONFLICT,
@@ -113,6 +113,48 @@ class AppFooter(BaseFooter):
                         disabled=not enabled,
                         tooltip=tooltip,
                     ).data_bind(compact=BaseFooter.compact)
+
+
+class TaskCardWidget(Static):
+    def __init__(
+        self,
+        task_id: str,
+        renderable: RenderableType,
+        *,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(renderable, classes=classes)
+        self.task_id = task_id
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if not isinstance(app, TodoistKanbanApp):
+            return
+        app.select_task_by_click(self.task_id)
+
+
+class GroupChipButton(Button):
+    def __init__(self, group_key: str, label, *, classes: str | None = None) -> None:
+        super().__init__(label, classes=classes)
+        self.group_key = group_key
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if not isinstance(app, TodoistKanbanApp):
+            return
+        app.select_group_by_click(self.group_key)
+
+
+class ActivePaneScroll(VerticalScroll):
+    def __init__(self, pane_name: str, *children, **kwargs) -> None:
+        super().__init__(*children, **kwargs)
+        self.pane_name = pane_name
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if not isinstance(app, TodoistKanbanApp):
+            return
+        app.activate_pane_from_mouse(self.pane_name)
 
 
 class TodoistGateway:
@@ -287,11 +329,12 @@ class TodoistKanbanApp(App[None]):
         with Container(id="app-shell"):
             yield Static(id="workspace-header")
             with Horizontal(id="content"):
-                with VerticalScroll(id="group-rail"):
+                with ActivePaneScroll("groups", id="group-rail"):
                     yield Vertical(id="group-strip")
-                yield Static(id="task-panel")
+                with ActivePaneScroll("tasks", id="task-panel"):
+                    yield Vertical(id="task-list")
                 with Vertical(id="detail-stack"):
-                    with VerticalScroll(id="detail-panel"):
+                    with ActivePaneScroll("inspector", id="detail-panel"):
                         yield Static(id="detail-summary")
                         yield Markdown(id="detail-markdown", open_links=False)
                     yield Static(id="calendar-panel")
@@ -334,8 +377,26 @@ class TodoistKanbanApp(App[None]):
         )
         if group_key is None:
             return
+        self.select_group_by_click(group_key)
+
+    def select_group_by_click(self, group_key: str) -> None:
+        if not self._is_main_screen_active():
+            return
+        self._set_active_pane("groups")
         self._select_group_by_key(group_key)
         self._refresh_group_and_task_views()
+
+    def select_task_by_click(self, task_id: str) -> None:
+        if not self._is_main_screen_active():
+            return
+        self._set_active_pane("tasks")
+        self._select_task_by_id(task_id)
+        self._refresh_task_views()
+
+    def activate_pane_from_mouse(self, pane: str) -> None:
+        if not self._is_main_screen_active():
+            return
+        self._set_active_pane(pane)
 
     def on_key(self, event: events.Key) -> None:
         if not self._is_main_screen_active():
@@ -1054,7 +1115,7 @@ class TodoistKanbanApp(App[None]):
 
         for group in self.groups:
             if group.key not in self._group_buttons:
-                button = Button(self._group_button_label(group), classes="group-chip")
+                button = GroupChipButton(group.key, self._group_button_label(group), classes="group-chip")
                 self._group_buttons[group.key] = button
                 await strip.mount(button)
 
@@ -1087,7 +1148,7 @@ class TodoistKanbanApp(App[None]):
             return
 
         self._clamp_selection()
-        self.query_one("#task-panel", Static).update(self._build_task_panel())
+        self._refresh_task_list()
         self.query_one("#detail-summary", Static).update(self._build_detail_panel())
         self.query_one("#detail-markdown", Markdown).update(build_detail_markdown(self.selected_task))
         self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
@@ -1103,7 +1164,7 @@ class TodoistKanbanApp(App[None]):
             return
         self._clamp_selection()
         selected_group = self.selected_group
-        task_panel = self.query_one("#task-panel", Static)
+        task_panel = self.query_one("#task-panel", VerticalScroll)
         task_panel.border_title = self._task_panel_title(selected_group)
         task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
         self._refresh_pane_chrome()
@@ -1164,7 +1225,7 @@ class TodoistKanbanApp(App[None]):
 
     def _refresh_pane_chrome(self) -> None:
         group_rail = self.query_one("#group-rail", VerticalScroll)
-        task_panel = self.query_one("#task-panel", Static)
+        task_panel = self.query_one("#task-panel", VerticalScroll)
         detail_panel = self.query_one("#detail-panel", VerticalScroll)
 
         group_rail.border_title = "Labels"
@@ -1204,7 +1265,7 @@ class TodoistKanbanApp(App[None]):
         return getattr(self.screen, "id", None) == "_default"
 
     def _build_task_panel(self) -> RenderableType:
-        task_panel = self.query_one("#task-panel", Static)
+        task_panel = self.query_one("#task-panel", VerticalScroll)
         available_height = task_panel.size.height or self.size.height
         return build_task_panel(
             self.selected_group,
@@ -1227,6 +1288,54 @@ class TodoistKanbanApp(App[None]):
             subtle_text_style=self.SUBTLE_TEXT_STYLE,
             border_style=ui.INACTIVE_TASK_BORDER,
         )
+
+    def _refresh_task_list(self) -> None:
+        task_panel = self.query_one("#task-panel", VerticalScroll)
+        task_list = self.query_one("#task-list", Vertical)
+        available_height = task_panel.size.height or self.size.height
+        tasks = self.selected_group.tasks
+        widgets: list[Static] = []
+
+        if not tasks:
+            widgets.append(Static(self._build_task_panel(), classes="task-panel-message"))
+        else:
+            visible_cards = max(2, (max(available_height, 18) - 6) // 4)
+            start, end = task_window(len(tasks), self.selection.task_index, visible_cards)
+
+            if start:
+                widgets.append(
+                    Static(
+                        f"{start} earlier task{'s' if start != 1 else ''} above",
+                        classes="task-panel-hint",
+                    )
+                )
+                widgets.append(Static("", classes="task-panel-spacer"))
+
+            for index in range(start, end):
+                task = tasks[index]
+                widgets.append(
+                    TaskCardWidget(
+                        task.id,
+                        self._render_task_card(
+                            task,
+                            selected=index == self.selection.task_index,
+                            accent=self.selected_group.accent,
+                        ),
+                        classes="task-card-widget",
+                    )
+                )
+
+            if end < len(tasks):
+                widgets.append(Static("", classes="task-panel-spacer"))
+                widgets.append(
+                    Static(
+                        f"{len(tasks) - end} more task{'s' if len(tasks) - end != 1 else ''} below",
+                        classes="task-panel-hint",
+                    )
+                )
+
+        task_list.remove_children()
+        task_list.mount(*widgets)
 
     def _build_detail_panel(self) -> RenderableType:
         return build_detail_panel(
@@ -1303,7 +1412,7 @@ def main(argv: list[str] | None = None) -> None:
         due_lang=args.due_lang,
         sync_root=Path(args.notes_root),
     )
-    app.run(mouse=False)
+    app.run(mouse=True)
 
 
 if __name__ == "__main__":

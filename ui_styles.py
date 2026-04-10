@@ -162,6 +162,7 @@ Button.group-chip.is-active {{
     height: 1fr;
     padding: 1 2;
     margin-right: 1;
+    scrollbar-size-vertical: 1;
     background: {PANEL_SHADE};
     border: round {INACTIVE_TASK_BORDER};
     border-title-align: center;
@@ -170,6 +171,32 @@ Button.group-chip.is-active {{
     border-title-color: {TEXT_PRIMARY};
     border-subtitle-style: bold;
     border-subtitle-color: {TEXT_MUTED};
+}}
+
+#task-list {{
+    width: 1fr;
+    height: auto;
+    background: {PANEL_SHADE};
+}}
+
+.task-card-widget {{
+    width: 1fr;
+    height: auto;
+    background: transparent;
+}}
+
+.task-panel-hint {{
+    color: {ACCENT_BORDER};
+    background: transparent;
+}}
+
+.task-panel-message {{
+    background: transparent;
+}}
+
+.task-panel-spacer {{
+    height: 1;
+    background: transparent;
 }}
 
 #detail-stack {{

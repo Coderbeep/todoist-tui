@@ -12,7 +12,7 @@ from textual.color import Color
 from textual.widgets import Markdown
 
 from app_types import LabelFormData, LabelMutationRequest, SelectionState, TaskFormData
-from main import TodoistGateway, TodoistKanbanApp, parse_args, resolve_token
+from main import ActivePaneScroll, GroupChipButton, TaskCardWidget, TodoistGateway, TodoistKanbanApp, parse_args, resolve_token
 from screens import ConfirmScreen, LabelManagerScreen, SyncPreviewScreen, TaskEditorScreen
 from tests.support import make_due, make_label, make_snapshot, make_task
 
@@ -401,6 +401,34 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(app.selected_group.key, "label:label-3")
 
+    async def test_group_chip_mouse_down_activates_groups_pane(self) -> None:
+        app = SnapshotPilotApp(
+            make_snapshot(
+                tasks=[make_task("task-1", "Alpha", labels=["alpha"])],
+                labels=[make_label("label-1", "alpha")],
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            label_button = app.query_one(GroupChipButton)
+            label_button.on_mouse_down(Mock())
+            await pilot.pause()
+
+            self.assertEqual(app.active_pane, "groups")
+            self.assertEqual(app.selected_group.key, "all")
+
+    async def test_mouse_activation_switches_to_inspector_pane(self) -> None:
+        app = SnapshotPilotApp(make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            inspector_panel = app.query_one("#detail-panel", ActivePaneScroll)
+            inspector_panel.on_mouse_down(Mock())
+
+            self.assertEqual(app.active_pane, "inspector")
+
     async def test_inspector_pane_keeps_task_selection_and_escape_returns_to_tasks(self) -> None:
         description = "\n".join(f"Line {index}" for index in range(80))
         app = SnapshotPilotApp(
@@ -445,6 +473,27 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("right")
             self.assertEqual(task_panel.styles.border.top[0], "round")
             self.assertEqual(detail_panel.styles.border.top[0], "heavy")
+
+    async def test_task_card_mouse_down_switches_selected_task(self) -> None:
+        app = SnapshotPilotApp(
+            make_snapshot(
+                tasks=[
+                    make_task("task-1", "Alpha", order=1),
+                    make_task("task-2", "Beta", order=2),
+                ],
+                labels=[],
+            )
+        )
+
+        async with app.run_test(size=(90, 24)) as pilot:
+            await pilot.pause()
+
+            task_cards = list(app.query(TaskCardWidget))
+            task_cards[1].on_mouse_down(Mock())
+            await pilot.pause()
+
+            self.assertEqual(app.active_pane, "tasks")
+            self.assertEqual(app.selected_task.id, "task-2")
 
     async def test_inactive_panes_use_grayish_border(self) -> None:
         app = SnapshotPilotApp(make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]))
