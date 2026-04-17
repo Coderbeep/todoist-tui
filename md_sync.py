@@ -146,6 +146,14 @@ class SyncAction:
     markdown_path: Path | None = None
     todoist_id: str | None = None
     details: dict[str, str] = field(default_factory=dict)
+    markdown_note: MarkdownNote | None = None
+    todoist_task: TodoistTaskReplica | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SyncResolution:
+    conflict: SyncAction
+    winner: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +326,8 @@ class SyncPlanner:
                             todoist_id=task.task_id,
                             reason="Both replicas exist before the first sync, but their content differs.",
                             details={"type": "bootstrap-content-mismatch"},
+                            markdown_note=note,
+                            todoist_task=task,
                         )
                     )
                 return actions, conflicts
@@ -360,6 +370,8 @@ class SyncPlanner:
                         todoist_id=task.task_id,
                         reason="Both replicas changed since the last sync and now disagree.",
                         details={"type": "concurrent-edit"},
+                        markdown_note=note,
+                        todoist_task=task,
                     )
                 )
 
@@ -388,6 +400,7 @@ class SyncPlanner:
                         todoist_id=record.todoist_id,
                         reason="Todoist disappeared while markdown changed locally after the last sync.",
                         details={"type": "delete-vs-edit", "winner": "manual"},
+                        markdown_note=note,
                     )
                 )
             else:
@@ -425,6 +438,7 @@ class SyncPlanner:
                         todoist_id=task.task_id,
                         reason="Markdown disappeared while Todoist changed remotely after the last sync.",
                         details={"type": "delete-vs-edit", "winner": "manual"},
+                        todoist_task=task,
                     )
                 )
             else:

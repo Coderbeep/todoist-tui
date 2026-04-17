@@ -633,11 +633,32 @@ SYNC_PREVIEW_SCREEN_CSS = (
 
 #sync-preview-markdown {{
     height: 1fr;
-    min-height: 12;
+    min-height: 10;
     padding: 0 1;
     background: {HEADER_BG};
     color: {TEXT_DEFAULT};
     border: round {INACTIVE_TASK_BORDER};
+}}
+
+#sync-preview-conflict-viewer {{
+    height: 1fr;
+    min-height: 14;
+    margin-top: 1;
+}}
+
+#sync-preview-conflict-local,
+#sync-preview-conflict-remote {{
+    width: 1fr;
+    height: 1fr;
+    min-height: 14;
+    padding: 0 1;
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: round {INACTIVE_TASK_BORDER};
+}}
+
+#sync-preview-conflict-local {{
+    margin-right: 1;
 }}
 
 #sync-preview-actions {{

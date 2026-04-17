@@ -14,7 +14,7 @@ from todoist_api_python.models import Task
 import ui_styles as ui
 from app_types import LabelFormData, LabelMutationRequest, TaskFormData
 from app_utils import parse_label_names
-from md_sync import SyncAction, SyncPreview, summarize_sync_preview
+from md_sync import MarkdownNote, SyncAction, SyncPreview, SyncResolution, TodoistTaskReplica, summarize_sync_preview
 from views import build_label_manager_rows
 
 
@@ -430,13 +430,15 @@ class LabelManagerScreen(ModalScreen[LabelMutationRequest | None]):
         label_list.update(build_label_manager_rows(self.labels, self.label_index))
 
 
-class SyncPreviewScreen(ModalScreen[SyncAction | None]):
+class SyncPreviewScreen(ModalScreen[SyncAction | SyncResolution | None]):
     CSS = ui.SYNC_PREVIEW_SCREEN_CSS
 
     BINDINGS = [
         Binding("up,k", "previous_action", "Prev", show=False),
         Binding("down,j", "next_action", "Next", show=False),
         Binding("enter,a", "apply_action", "Apply", show=False),
+        Binding("m", "keep_markdown", "Keep markdown", show=False),
+        Binding("t", "keep_todoist", "Keep Todoist", show=False),
         Binding("escape,q,s", "close_screen", "Close", show=False),
     ]
 
@@ -450,11 +452,18 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
         summary = Static(id="sync-preview-summary")
         action_list = Static(id="sync-preview-list")
         markdown = Markdown(id="sync-preview-markdown", open_links=False)
+        conflict_local = Markdown(id="sync-preview-conflict-local", open_links=False)
+        conflict_remote = Markdown(id="sync-preview-conflict-remote", open_links=False)
         with Container(id="sync-preview-shell") as shell:
             yield summary
             yield action_list
             yield markdown
+            with Horizontal(id="sync-preview-conflict-viewer"):
+                yield conflict_local
+                yield conflict_remote
             with Horizontal(id="sync-preview-actions"):
+                yield Button(Text("Keep Markdown [M]"), id="sync-preview-keep-markdown", compact=True)
+                yield Button(Text("Keep Todoist [T]"), id="sync-preview-keep-todoist", compact=True)
                 yield Button(Text("Apply [Enter]"), id="sync-preview-apply", compact=True)
                 yield Button(Text("Close [Esc]"), id="sync-preview-close", compact=True)
         shell.border_title = "Markdown sync preview"
@@ -470,6 +479,22 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
         self.action_index = max(0, min(self.action_index, len(actions) - 1))
         return actions[self.action_index]
 
+    @property
+    def selected_conflict(self) -> SyncAction | None:
+        conflicts = self.preview.plan.conflicts
+        if not conflicts:
+            return None
+        if self.preview.plan.actions:
+            return None
+        self.action_index = max(0, min(self.action_index, len(conflicts) - 1))
+        return conflicts[self.action_index]
+
+    @property
+    def _item_count(self) -> int:
+        if self.preview.plan.actions:
+            return len(self.preview.plan.actions)
+        return len(self.preview.plan.conflicts)
+
     def action_close_screen(self) -> None:
         self.dismiss(None)
 
@@ -480,7 +505,7 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
         self._refresh_preview()
 
     def action_next_action(self) -> None:
-        if self.action_index >= len(self.preview.plan.actions) - 1:
+        if self.action_index >= self._item_count - 1:
             return
         self.action_index += 1
         self._refresh_preview()
@@ -491,7 +516,25 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
             return
         self.dismiss(action)
 
+    def action_keep_markdown(self) -> None:
+        conflict = self.selected_conflict
+        if not self._supports_conflict_resolution(conflict):
+            return
+        self.dismiss(SyncResolution(conflict=conflict, winner="markdown"))
+
+    def action_keep_todoist(self) -> None:
+        conflict = self.selected_conflict
+        if not self._supports_conflict_resolution(conflict):
+            return
+        self.dismiss(SyncResolution(conflict=conflict, winner="todoist"))
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "sync-preview-keep-markdown":
+            self.action_keep_markdown()
+            return
+        if event.button.id == "sync-preview-keep-todoist":
+            self.action_keep_todoist()
+            return
         if event.button.id == "sync-preview-apply":
             self.action_apply_action()
             return
@@ -502,6 +545,9 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
         self.query_one("#sync-preview-summary", Static).update(self._summary_text())
         self.query_one("#sync-preview-list", Static).update(self._list_text())
         self.query_one("#sync-preview-markdown", Markdown).update(self._markdown_text())
+        self.query_one("#sync-preview-conflict-local", Markdown).update(self._conflict_pane_text("markdown"))
+        self.query_one("#sync-preview-conflict-remote", Markdown).update(self._conflict_pane_text("todoist"))
+        self._refresh_action_buttons()
 
     def _summary_text(self) -> str:
         summary = summarize_sync_preview(self.preview)
@@ -514,6 +560,7 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
 
     def _markdown_text(self) -> str:
         selected = self.selected_action
+        conflict = self.selected_conflict
         lines = [
             "## Summary",
             "",
@@ -557,6 +604,39 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
                     + ", ".join(f"`{key}={value}`" for key, value in sorted(selected.details.items()))
                 )
             lines.extend(["", selected.reason])
+        elif conflict is not None:
+            lines.extend(
+                [
+                    "",
+                    "## Selected Conflict",
+                    "",
+                    f"- Sync id: `{conflict.sync_id}`",
+                ]
+            )
+            if conflict.markdown_path is not None:
+                lines.append(f"- Markdown: `{conflict.markdown_path}`")
+            if conflict.todoist_id is not None:
+                lines.append(f"- Todoist: `{conflict.todoist_id}`")
+            if conflict.details:
+                lines.append(
+                    "- Details: "
+                    + ", ".join(f"`{key}={value}`" for key, value in sorted(conflict.details.items()))
+                )
+            lines.extend(["", conflict.reason])
+            if self._supports_conflict_resolution(conflict):
+                lines.extend(
+                    [
+                        "",
+                        "Choose `Keep Markdown` to overwrite Todoist with the local note, or `Keep Todoist` to rewrite the markdown note from the remote task.",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        "",
+                        "This conflict type is visible here, but it still needs manual resolution outside the modal.",
+                    ]
+                )
 
         lines.extend(self._action_section("Conflicts", self.preview.plan.conflicts))
         if not selected:
@@ -575,15 +655,23 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
         return "\n".join(lines)
 
     def _list_text(self) -> str:
-        if not self.preview.plan.actions:
-            return "No executable actions."
+        if self.preview.plan.actions:
+            lines = ["Planned actions:"]
+            for index, action in enumerate(self.preview.plan.actions):
+                marker = ">" if index == self.action_index else " "
+                title = action.payload.title if action.payload is not None else action.todoist_id or action.sync_id
+                lines.append(f"{marker} {index + 1}. {action.kind} :: {title}")
+            return "\n".join(lines)
 
-        lines = ["Planned actions:"]
-        for index, action in enumerate(self.preview.plan.actions):
-            marker = ">" if index == self.action_index else " "
-            title = action.payload.title if action.payload is not None else action.todoist_id or action.sync_id
-            lines.append(f"{marker} {index + 1}. {action.kind} :: {title}")
-        return "\n".join(lines)
+        if self.preview.plan.conflicts:
+            lines = ["Unresolved conflicts:"]
+            for index, conflict in enumerate(self.preview.plan.conflicts):
+                marker = ">" if index == self.action_index else " "
+                title = self._conflict_title(conflict)
+                lines.append(f"{marker} {index + 1}. {conflict.details.get('type', conflict.kind)} :: {title}")
+            return "\n".join(lines)
+
+        return "No executable actions."
 
     @staticmethod
     def _action_section(title: str, actions: tuple[SyncAction, ...]) -> list[str]:
@@ -606,3 +694,98 @@ class SyncPreviewScreen(ModalScreen[SyncAction | None]):
                 )
             lines.append(f"   Reason: {action.reason}")
         return lines
+
+    def _refresh_action_buttons(self) -> None:
+        apply_button = self.query_one("#sync-preview-apply", Button)
+        keep_markdown_button = self.query_one("#sync-preview-keep-markdown", Button)
+        keep_todoist_button = self.query_one("#sync-preview-keep-todoist", Button)
+
+        apply_button.disabled = self.selected_action is None
+        can_resolve = self._supports_conflict_resolution(self.selected_conflict)
+        keep_markdown_button.disabled = not can_resolve
+        keep_todoist_button.disabled = not can_resolve
+
+    def _conflict_pane_text(self, side: str) -> str:
+        conflict = self.selected_conflict
+        if conflict is None:
+            title = "Local Markdown" if side == "markdown" else "Remote Todoist"
+            return f"## {title}\n\nNo conflict selected."
+
+        if side == "markdown":
+            return self._render_markdown_conflict(conflict.markdown_note, conflict)
+        return self._render_todoist_conflict(conflict.todoist_task, conflict)
+
+    @staticmethod
+    def _supports_conflict_resolution(conflict: SyncAction | None) -> bool:
+        return (
+            conflict is not None
+            and conflict.markdown_note is not None
+            and conflict.todoist_task is not None
+        )
+
+    @staticmethod
+    def _conflict_title(conflict: SyncAction) -> str:
+        if conflict.markdown_note is not None:
+            return conflict.markdown_note.payload.title
+        if conflict.todoist_task is not None:
+            return conflict.todoist_task.payload.title
+        return conflict.todoist_id or conflict.sync_id
+
+    @staticmethod
+    def _render_markdown_conflict(note: MarkdownNote | None, conflict: SyncAction) -> str:
+        lines = ["## Local Markdown", ""]
+        if note is None:
+            lines.extend(
+                [
+                    "Replica is missing.",
+                    "",
+                    f"- Expected path: `{conflict.markdown_path}`" if conflict.markdown_path is not None else "",
+                ]
+            )
+            return "\n".join(line for line in lines if line)
+
+        lines.extend(
+            [
+                f"- Path: `{note.path}`",
+                f"- Sync id: `{note.sync_id}`",
+                f"- Todoist id: `{note.todoist_id}`",
+                f"- Labels: `{', '.join(note.payload.labels) if note.payload.labels else 'none'}`",
+                f"- Due: `{note.payload.due or 'none'}`",
+                "",
+                "### Content",
+                "",
+                f"# {note.payload.title}",
+            ]
+        )
+        if note.payload.body:
+            lines.extend(["", note.payload.body])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_todoist_conflict(task: TodoistTaskReplica | None, conflict: SyncAction) -> str:
+        lines = ["## Remote Todoist", ""]
+        if task is None:
+            lines.extend(
+                [
+                    "Replica is missing.",
+                    "",
+                    f"- Todoist id: `{conflict.todoist_id}`" if conflict.todoist_id is not None else "",
+                ]
+            )
+            return "\n".join(line for line in lines if line)
+
+        lines.extend(
+            [
+                f"- Todoist id: `{task.task_id}`",
+                f"- Updated at: `{task.updated_at or 'unknown'}`",
+                f"- Labels: `{', '.join(task.payload.labels) if task.payload.labels else 'none'}`",
+                f"- Due: `{task.payload.due or 'none'}`",
+                "",
+                "### Content",
+                "",
+                f"# {task.payload.title}",
+            ]
+        )
+        if task.payload.body:
+            lines.extend(["", task.payload.body])
+        return "\n".join(lines)

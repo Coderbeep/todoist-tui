@@ -38,6 +38,7 @@ from md_sync import (
     SyncPlan,
     SyncPreview,
     SyncRecord,
+    SyncResolution,
     TaskPayload,
     TodoistTaskReplica,
     UPDATE_MARKDOWN,
@@ -548,12 +549,15 @@ class TodoistKanbanApp(App[None]):
             return
         self.load_snapshot()
 
-    def _finish_sync_preview(self, action: SyncAction | None) -> None:
-        if action is None:
+    def _finish_sync_preview(self, result: SyncAction | SyncResolution | None) -> None:
+        if result is None:
             self.status = "Sync preview closed."
             self._refresh_status()
             return
-        self.run_sync_action(action)
+        if isinstance(result, SyncResolution):
+            self.run_sync_resolution(result)
+            return
+        self.run_sync_action(result)
 
     def _finish_new_task(self, form: TaskFormData | None) -> None:
         if form is None or self.inbox_project_id is None:
@@ -823,6 +827,30 @@ class TodoistKanbanApp(App[None]):
         finally:
             self._set_busy(False)
 
+    @work(exclusive=True, group="todoist", exit_on_error=False)
+    async def run_sync_resolution(self, resolution: SyncResolution) -> None:
+        winner = "markdown" if resolution.winner == "markdown" else "Todoist"
+        self._set_busy(True, f"Resolving sync conflict by keeping {winner}...")
+        try:
+            message = await asyncio.to_thread(self._apply_sync_resolution, resolution)
+            snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
+            await self._apply_snapshot(snapshot, sync_preview=sync_preview, sync_error=sync_error)
+            self.status = self._combine_status(message, sync_messages, sync_preview, sync_error)
+            self.notify(message, title="Markdown sync", severity="information", markup=False)
+            if sync_messages:
+                self.notify(
+                    self._auto_sync_status(sync_messages, sync_preview, sync_error),
+                    title="Markdown sync",
+                    severity="information",
+                    markup=False,
+                )
+            self._refresh_status()
+        except Exception as error:
+            self._handle_error("Sync resolution failed.", error)
+        finally:
+            self._set_busy(False)
+
     def _apply_sync_actions(self, actions: tuple[SyncAction, ...]) -> list[str]:
         return [self._apply_sync_action(action) for action in actions]
 
@@ -967,6 +995,59 @@ class TodoistKanbanApp(App[None]):
             return f"Bound markdown note to Todoist task '{action.todoist_id}'."
 
         raise RuntimeError(f"Unsupported sync action: {action.kind}")
+
+    def _apply_sync_resolution(self, resolution: SyncResolution) -> str:
+        conflict = resolution.conflict
+        if conflict.kind != CONFLICT:
+            raise RuntimeError("Sync resolution requires a conflict.")
+        if conflict.markdown_note is None or conflict.todoist_task is None:
+            raise RuntimeError("This conflict does not yet support in-app resolution.")
+
+        records = load_sync_records(self.sync_state_path)
+
+        if resolution.winner == "markdown":
+            updated = self.gateway.update_task_by_id(
+                conflict.todoist_task.task_id,
+                conflict.markdown_note.payload,
+            )
+            note = MarkdownNote(
+                path=conflict.markdown_note.path,
+                payload=conflict.markdown_note.payload,
+                sync_id=conflict.sync_id,
+                todoist_id=updated.id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    conflict.sync_id,
+                    markdown=note,
+                    todoist=todoist_task_to_replica(updated),
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Resolved conflict by keeping markdown for '{note.payload.title}'."
+
+        if resolution.winner == "todoist":
+            note = MarkdownNote(
+                path=conflict.markdown_note.path,
+                payload=conflict.todoist_task.payload,
+                sync_id=conflict.sync_id,
+                todoist_id=conflict.todoist_task.task_id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    conflict.sync_id,
+                    markdown=note,
+                    todoist=conflict.todoist_task,
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Resolved conflict by keeping Todoist for '{note.payload.title}'."
+
+        raise RuntimeError(f"Unsupported conflict resolution winner: {resolution.winner}")
 
     @staticmethod
     def _record_markdown_path(records: list[SyncRecord], sync_id: str) -> Path:
