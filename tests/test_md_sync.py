@@ -168,6 +168,8 @@ class MarkdownTodoistSyncTests(unittest.TestCase):
         conflict = self.assert_single_conflict(plan, "concurrent-edit")
         self.assertEqual(conflict.markdown_path, NOTE_PATH)
         self.assertEqual(conflict.todoist_id, "todoist-1")
+        self.assertEqual(conflict.markdown_note.payload.title, "Local revision")
+        self.assertEqual(conflict.todoist_task.payload.title, "Remote revision")
 
     def test_case_markdown_survives_without_known_remote_history_creates_todoist(self) -> None:
         note = make_note(sync_id="sync-1")

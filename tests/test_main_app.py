@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import ui_styles as ui
-from md_sync import SyncAction, SyncPlan, SyncPreview, TaskPayload, load_markdown_notes, load_sync_records
+from md_sync import MarkdownNote, SyncAction, SyncPlan, SyncPreview, SyncResolution, TaskPayload, TodoistTaskReplica, load_markdown_notes, load_sync_records
 from textual.color import Color
 from textual.widgets import Markdown
 
@@ -226,6 +226,7 @@ class MainHelpersTests(unittest.TestCase):
     def test_finish_sync_preview_dispatches_worker_for_selected_action(self) -> None:
         app = TodoistKanbanApp.__new__(TodoistKanbanApp)
         app.run_sync_action = Mock()
+        app.run_sync_resolution = Mock()
         app._refresh_status = Mock()
         app.status = ""
         action = SyncAction(kind="create_todoist", sync_id="sync-1", reason="Apply it.")
@@ -233,6 +234,23 @@ class MainHelpersTests(unittest.TestCase):
         TodoistKanbanApp._finish_sync_preview(app, action)
 
         app.run_sync_action.assert_called_once_with(action)
+        app.run_sync_resolution.assert_not_called()
+
+    def test_finish_sync_preview_dispatches_worker_for_resolution_choice(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        app.run_sync_action = Mock()
+        app.run_sync_resolution = Mock()
+        app._refresh_status = Mock()
+        app.status = ""
+        resolution = SyncResolution(
+            conflict=SyncAction(kind="conflict", sync_id="sync-1", reason="Resolve it."),
+            winner="markdown",
+        )
+
+        TodoistKanbanApp._finish_sync_preview(app, resolution)
+
+        app.run_sync_resolution.assert_called_once_with(resolution)
+        app.run_sync_action.assert_not_called()
 
     def test_apply_sync_action_creates_markdown_note_and_persists_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -265,6 +283,92 @@ class MainHelpersTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0].sync_id, "sync-1")
             self.assertEqual(records[0].todoist_id, "todoist-1")
+
+    def test_apply_sync_resolution_keep_markdown_updates_remote_and_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            notes_root = Path(tmp_dir) / "notes"
+            state_path = notes_root / ".todoist-sync-state.json"
+            note_path = notes_root / "task.md"
+
+            app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+            app.sync_root = notes_root
+            app.sync_state_path = state_path
+            app.gateway = SimpleNamespace(
+                update_task_by_id=Mock(return_value=make_task("todoist-1", "Local title", description="Local body"))
+            )
+
+            conflict = SyncAction(
+                kind="conflict",
+                sync_id="sync-1",
+                reason="Both replicas changed.",
+                markdown_path=note_path,
+                todoist_id="todoist-1",
+                details={"type": "concurrent-edit"},
+                markdown_note=MarkdownNote(
+                    path=note_path,
+                    payload=TaskPayload("Local title", "Local body", ("alpha",), "tomorrow"),
+                    sync_id="sync-1",
+                    todoist_id="todoist-1",
+                ),
+                todoist_task=TodoistTaskReplica(
+                    task_id="todoist-1",
+                    payload=TaskPayload("Remote title", "Remote body"),
+                ),
+            )
+
+            message = TodoistKanbanApp._apply_sync_resolution(
+                app,
+                SyncResolution(conflict=conflict, winner="markdown"),
+            )
+
+            self.assertIn("keeping markdown", message)
+            app.gateway.update_task_by_id.assert_called_once_with("todoist-1", conflict.markdown_note.payload)
+            notes = load_markdown_notes(notes_root)
+            self.assertEqual(notes[0].payload.title, "Local title")
+            records = load_sync_records(state_path)
+            self.assertEqual(records[0].todoist_id, "todoist-1")
+
+    def test_apply_sync_resolution_keep_todoist_rewrites_markdown_and_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            notes_root = Path(tmp_dir) / "notes"
+            state_path = notes_root / ".todoist-sync-state.json"
+            note_path = notes_root / "task.md"
+
+            app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+            app.sync_root = notes_root
+            app.sync_state_path = state_path
+            app.gateway = SimpleNamespace()
+
+            conflict = SyncAction(
+                kind="conflict",
+                sync_id="sync-1",
+                reason="Both replicas changed.",
+                markdown_path=note_path,
+                todoist_id="todoist-1",
+                details={"type": "concurrent-edit"},
+                markdown_note=MarkdownNote(
+                    path=note_path,
+                    payload=TaskPayload("Local title", "Local body"),
+                    sync_id="sync-1",
+                    todoist_id="todoist-1",
+                ),
+                todoist_task=TodoistTaskReplica(
+                    task_id="todoist-1",
+                    payload=TaskPayload("Remote title", "Remote body", ("beta",), "friday"),
+                ),
+            )
+
+            message = TodoistKanbanApp._apply_sync_resolution(
+                app,
+                SyncResolution(conflict=conflict, winner="todoist"),
+            )
+
+            self.assertIn("keeping Todoist", message)
+            notes = load_markdown_notes(notes_root)
+            self.assertEqual(notes[0].payload.title, "Remote title")
+            self.assertEqual(notes[0].payload.due, "friday")
+            records = load_sync_records(state_path)
+            self.assertEqual(records[0].markdown_fingerprint, notes[0].fingerprint)
 
     def test_apply_sync_actions_runs_each_action_in_order(self) -> None:
         app = TodoistKanbanApp.__new__(TodoistKanbanApp)

@@ -8,7 +8,7 @@ from textual.containers import Container
 from textual.widgets import Button, Checkbox, Input, Markdown, Select, Static, TextArea
 
 from app_types import LabelFormData, LabelMutationRequest, TaskFormData
-from md_sync import SyncAction, SyncPlan, SyncPreview
+from md_sync import MarkdownNote, SyncAction, SyncPlan, SyncPreview, SyncResolution, TaskPayload, TodoistTaskReplica
 from screens import (
     ConfirmScreen,
     LabelEditorScreen,
@@ -381,6 +381,50 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(app.result, SyncAction)
         self.assertEqual(app.result.sync_id, "sync-2")
+
+    async def test_sync_preview_screen_returns_keep_markdown_resolution_for_conflict(self) -> None:
+        conflict = SyncAction(
+            kind="conflict",
+            sync_id="sync-1",
+            reason="Both replicas changed.",
+            markdown_path=Path("/notes/task.md"),
+            todoist_id="todoist-1",
+            details={"type": "concurrent-edit"},
+            markdown_note=MarkdownNote(
+                path=Path("/notes/task.md"),
+                payload=TaskPayload(title="Local title", body="Local body", labels=("alpha",), due="tomorrow"),
+                sync_id="sync-1",
+                todoist_id="todoist-1",
+            ),
+            todoist_task=TodoistTaskReplica(
+                task_id="todoist-1",
+                payload=TaskPayload(title="Remote title", body="Remote body", labels=("beta",), due="friday"),
+                updated_at="2026-04-11T08:30:00Z",
+            ),
+        )
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=1,
+            record_count=1,
+            plan=SyncPlan(conflicts=(conflict,)),
+        )
+        app = ModalHostApp(SyncPreviewScreen(preview))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            local_pane = screen.query_one("#sync-preview-conflict-local", Markdown)
+            remote_pane = screen.query_one("#sync-preview-conflict-remote", Markdown)
+
+            self.assertIn("Local title", local_pane._markdown)
+            self.assertIn("Remote title", remote_pane._markdown)
+            await pilot.press("m")
+            await pilot.pause()
+
+        self.assertIsInstance(app.result, SyncResolution)
+        self.assertEqual(app.result.winner, "markdown")
+        self.assertEqual(app.result.conflict.sync_id, "sync-1")
 
     async def test_sync_preview_screen_surfaces_error_text(self) -> None:
         preview = SyncPreview(
