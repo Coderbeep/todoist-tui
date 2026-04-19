@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import time
 from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date
 from itertools import groupby
 from typing import Callable
 
@@ -144,6 +146,14 @@ class GroupChipButton(Button):
         if not isinstance(app, TodoistKanbanApp):
             return
         app.select_group_by_click(self.group_key)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskListEntry:
+    kind: str
+    task_id: str | None
+    renderable: RenderableType
+    classes: str
 
 
 class ActivePaneScroll(VerticalScroll):
@@ -317,6 +327,17 @@ class TodoistKanbanApp(App[None]):
         self.status = "Connecting to Todoist..."
         self.busy = False
         self._group_buttons: dict[str, Button] = {}
+        self._group_button_state: dict[str, tuple[str, bool, str]] = {}
+        self._pane_chrome_state: tuple[str, str, int] | None = None
+        self._task_card_render_cache: dict[tuple[str, bool, str], RenderableType] = {}
+        self._detail_panel_render_cache: dict[tuple[str | None, str], RenderableType] = {}
+        self._detail_markdown_cache: dict[str | None, str] = {}
+        self._calendar_render_cache: dict[tuple[str | None, str | None, str], RenderableType] = {}
+        self._header_render_cache: dict[tuple[str, int, int, bool], RenderableType] = {}
+        self._status_render_cache: dict[tuple[str, bool], RenderableType] = {}
+        self._last_detail_panel_key: tuple[str | None, str] | None = None
+        self._last_detail_markdown_text: str | None = None
+        self._last_calendar_key: tuple[str | None, str | None, str] | None = None
         self._last_navigation_key: str | None = None
         self._last_navigation_time = 0.0
         self.sync_root = Path(sync_root)
@@ -754,6 +775,7 @@ class TodoistKanbanApp(App[None]):
             label.name.casefold(): ui.COLOR_HEX_BY_NAME.get(label.color, ui.TEXT_MUTED)
             for label in self.labels
         }
+        self._clear_render_caches()
 
         desired_group_key = selected_group_key or self.selection.current_group_key
         desired_task_id = selected_task_id or self.selection.current_task_id
@@ -1193,6 +1215,7 @@ class TodoistKanbanApp(App[None]):
             )
             for key in obsolete_keys:
                 self._group_buttons.pop(key, None)
+                self._group_button_state.pop(key, None)
 
         for group in self.groups:
             if group.key not in self._group_buttons:
@@ -1216,6 +1239,19 @@ class TodoistKanbanApp(App[None]):
 
         self._update_group_buttons()
 
+    def _clear_render_caches(self) -> None:
+        self._task_card_render_cache.clear()
+        self._detail_panel_render_cache.clear()
+        self._detail_markdown_cache.clear()
+        self._calendar_render_cache.clear()
+        self._header_render_cache.clear()
+        self._status_render_cache.clear()
+        self._group_button_state.clear()
+        self._pane_chrome_state = None
+        self._last_detail_panel_key = None
+        self._last_detail_markdown_text = None
+        self._last_calendar_key = None
+
     def _refresh_ui(self) -> None:
         if not self.is_mounted:
             return
@@ -1229,10 +1265,27 @@ class TodoistKanbanApp(App[None]):
             return
 
         self._clamp_selection()
+        selected_group = self.selected_group
+        selected_task = self.selected_task
         self._refresh_task_list()
-        self.query_one("#detail-summary", Static).update(self._build_detail_panel())
-        self.query_one("#detail-markdown", Markdown).update(build_detail_markdown(self.selected_task))
-        self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
+        detail_key = (selected_task.id if selected_task is not None else None, selected_group.key)
+        if detail_key != self._last_detail_panel_key:
+            self.query_one("#detail-summary", Static).update(
+                self._cached_detail_panel(selected_task, selected_group)
+            )
+            self._last_detail_panel_key = detail_key
+
+        markdown_text = self._cached_detail_markdown(selected_task)
+        if markdown_text != self._last_detail_markdown_text:
+            self.query_one("#detail-markdown", Markdown).update(markdown_text)
+            self._last_detail_markdown_text = markdown_text
+
+        calendar_key = self._calendar_cache_key(selected_task)
+        if calendar_key != self._last_calendar_key:
+            self.query_one("#calendar-panel", Static).update(
+                self._cached_calendar_widget(selected_task, calendar_key)
+            )
+            self._last_calendar_key = calendar_key
 
     def _refresh_group_and_task_views(self) -> None:
         if not self.is_mounted:
@@ -1254,14 +1307,17 @@ class TodoistKanbanApp(App[None]):
     def _refresh_header(self) -> None:
         if not self.is_mounted:
             return
-        self.query_one("#workspace-header", Static).update(
-            build_workspace_header(
+        key = (self.inbox_name, len(self.tasks), len(self.labels), self.busy)
+        renderable = self._header_render_cache.get(key)
+        if renderable is None:
+            renderable = build_workspace_header(
                 self.inbox_name,
                 len(self.tasks),
                 len(self.labels),
                 busy=self.busy,
             )
-        )
+            self._header_render_cache[key] = renderable
+        self.query_one("#workspace-header", Static).update(renderable)
 
     def _refresh_status(self) -> None:
         if not self.is_mounted:
@@ -1273,8 +1329,14 @@ class TodoistKanbanApp(App[None]):
             button = self._group_buttons.get(group.key)
             if button is None:
                 continue
-            button.label = self._group_button_label(group)
-            if index == self.selection.group_index:
+            label = self._group_button_label(group)
+            selected = index == self.selection.group_index
+            state = (label, selected, self.active_pane if selected else "")
+            if self._group_button_state.get(group.key) == state:
+                continue
+
+            button.label = label
+            if selected:
                 button.add_class("is-active")
                 button.styles.border = ("none", ui.PANEL_SHADE)
                 button.styles.border_left = (
@@ -1294,6 +1356,7 @@ class TodoistKanbanApp(App[None]):
                 button.styles.background = ui.PANEL_SHADE
                 button.styles.color = group.accent
                 button.styles.text_style = "none"
+            self._group_button_state[group.key] = state
 
     def _group_button_label(self, group: LabelGroup) -> str:
         if group.key == "all":
@@ -1305,6 +1368,11 @@ class TodoistKanbanApp(App[None]):
         return f"{marker} {group_label(group)}"
 
     def _refresh_pane_chrome(self) -> None:
+        selected_group = self.selected_group
+        state = (self.active_pane, selected_group.key, len(selected_group.tasks))
+        if self._pane_chrome_state == state:
+            return
+
         group_rail = self.query_one("#group-rail", VerticalScroll)
         task_panel = self.query_one("#task-panel", VerticalScroll)
         detail_panel = self.query_one("#detail-panel", VerticalScroll)
@@ -1316,7 +1384,7 @@ class TodoistKanbanApp(App[None]):
             ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "groups" else ("round", ui.INACTIVE_TASK_BORDER)
         )
 
-        task_panel.border_subtitle = self._task_panel_subtitle(self.selected_group)
+        task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
         task_panel.styles.background = ui.PANEL_SHADE
         task_panel.styles.border = (
             ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "tasks" else ("round", ui.INACTIVE_TASK_BORDER)
@@ -1328,8 +1396,11 @@ class TodoistKanbanApp(App[None]):
         detail_panel.styles.border = (
             ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "inspector" else ("round", ui.INACTIVE_TASK_BORDER)
         )
+        self._pane_chrome_state = state
 
     def _set_active_pane(self, pane: str) -> None:
+        if pane == self.active_pane and self._pane_chrome_state is not None:
+            return
         self.active_pane = pane
         if self.is_mounted:
             self._refresh_pane_chrome()
@@ -1359,6 +1430,16 @@ class TodoistKanbanApp(App[None]):
         )
 
     def _render_task_card(self, task: Task, *, selected: bool, accent: str) -> RenderableType:
+        cache_key = (task.id, selected, accent)
+        cached = self._task_card_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        renderable = self._build_uncached_task_card(task, selected=selected, accent=accent)
+        self._task_card_render_cache[cache_key] = renderable
+        return renderable
+
+    def _build_uncached_task_card(self, task: Task, *, selected: bool, accent: str) -> RenderableType:
         return build_task_card(
             task,
             selected=selected,
@@ -1371,64 +1452,165 @@ class TodoistKanbanApp(App[None]):
         )
 
     def _refresh_task_list(self) -> None:
-        task_panel = self.query_one("#task-panel", VerticalScroll)
         task_list = self.query_one("#task-list", Vertical)
-        available_height = task_panel.size.height or self.size.height
-        tasks = self.selected_group.tasks
+        entries = self._task_list_entries()
+
+        if self._can_reuse_task_list_widgets(task_list.children, entries):
+            self._update_task_list_widgets(task_list.children, entries)
+            return
+
         widgets: list[Static] = []
-
-        if not tasks:
-            widgets.append(Static(self._build_task_panel(), classes="task-panel-message"))
-        else:
-            visible_cards = max(2, (max(available_height, 18) - 6) // 4)
-            start, end = task_window(len(tasks), self.selection.task_index, visible_cards)
-
-            if start:
-                widgets.append(
-                    Static(
-                        f"{start} earlier task{'s' if start != 1 else ''} above",
-                        classes="task-panel-hint",
-                    )
-                )
-                widgets.append(Static("", classes="task-panel-spacer"))
-
-            for index in range(start, end):
-                task = tasks[index]
+        for entry in entries:
+            if entry.kind == "task":
                 widgets.append(
                     TaskCardWidget(
-                        task.id,
-                        self._render_task_card(
-                            task,
-                            selected=index == self.selection.task_index,
-                            accent=self.selected_group.accent,
-                        ),
-                        classes="task-card-widget",
+                        entry.task_id or "",
+                        entry.renderable,
+                        classes=entry.classes,
                     )
                 )
-
-            if end < len(tasks):
-                widgets.append(Static("", classes="task-panel-spacer"))
-                widgets.append(
-                    Static(
-                        f"{len(tasks) - end} more task{'s' if len(tasks) - end != 1 else ''} below",
-                        classes="task-panel-hint",
-                    )
-                )
+            else:
+                widgets.append(Static(entry.renderable, classes=entry.classes))
 
         task_list.remove_children()
         task_list.mount(*widgets)
 
+    def _task_list_entries(self) -> list[TaskListEntry]:
+        task_panel = self.query_one("#task-panel", VerticalScroll)
+        available_height = task_panel.size.height or self.size.height
+        selected_group = self.selected_group
+        tasks = selected_group.tasks
+        entries: list[TaskListEntry] = []
+
+        if not tasks:
+            return [
+                TaskListEntry(
+                    "message",
+                    None,
+                    self._build_task_panel(),
+                    "task-panel-message",
+                )
+            ]
+
+        visible_cards = max(2, (max(available_height, 18) - 6) // 4)
+        start, end = task_window(len(tasks), self.selection.task_index, visible_cards)
+
+        if start:
+            entries.append(
+                TaskListEntry(
+                    "hint",
+                    None,
+                    f"{start} earlier task{'s' if start != 1 else ''} above",
+                    "task-panel-hint",
+                )
+            )
+            entries.append(TaskListEntry("spacer", None, "", "task-panel-spacer"))
+
+        for index in range(start, end):
+            task = tasks[index]
+            entries.append(
+                TaskListEntry(
+                    "task",
+                    task.id,
+                    self._render_task_card(
+                        task,
+                        selected=index == self.selection.task_index,
+                        accent=selected_group.accent,
+                    ),
+                    "task-card-widget",
+                )
+            )
+
+        if end < len(tasks):
+            entries.append(TaskListEntry("spacer", None, "", "task-panel-spacer"))
+            entries.append(
+                TaskListEntry(
+                    "hint",
+                    None,
+                    f"{len(tasks) - end} more task{'s' if len(tasks) - end != 1 else ''} below",
+                    "task-panel-hint",
+                )
+            )
+
+        return entries
+
+    def _can_reuse_task_list_widgets(self, children, entries: list[TaskListEntry]) -> bool:
+        if len(children) != len(entries):
+            return False
+
+        for child, entry in zip(children, entries):
+            if entry.kind == "task":
+                if not isinstance(child, TaskCardWidget):
+                    return False
+                continue
+            if isinstance(child, TaskCardWidget) or not isinstance(child, Static):
+                return False
+            if entry.classes not in child.classes:
+                return False
+        return True
+
+    def _update_task_list_widgets(self, children, entries: list[TaskListEntry]) -> None:
+        for child, entry in zip(children, entries):
+            if isinstance(child, TaskCardWidget):
+                child.task_id = entry.task_id or ""
+            child.update(entry.renderable)
+
     def _build_detail_panel(self) -> RenderableType:
-        return build_detail_panel(
-            self.selected_task,
-            self.selected_group,
+        return self._cached_detail_panel(self.selected_task, self.selected_group)
+
+    def _cached_detail_panel(self, task: Task | None, group: LabelGroup) -> RenderableType:
+        cache_key = (task.id if task is not None else None, group.key)
+        cached = self._detail_panel_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        renderable = build_detail_panel(
+            task,
+            group,
             title_style=self.CARD_TITLE_STYLE,
             muted_style=self.MUTED_TEXT_STYLE,
             border_style=self.BORDER_STYLE,
         )
+        self._detail_panel_render_cache[cache_key] = renderable
+        return renderable
+
+    def _cached_detail_markdown(self, task: Task | None) -> str:
+        cache_key = task.id if task is not None else None
+        if cache_key in self._detail_markdown_cache:
+            return self._detail_markdown_cache[cache_key]
+
+        markdown = build_detail_markdown(task)
+        self._detail_markdown_cache[cache_key] = markdown
+        return markdown
+
+    def _calendar_cache_key(self, task: Task | None) -> tuple[str | None, str | None, str]:
+        due_date = getattr(getattr(task, "due", None), "date", None)
+        return (
+            task.id if task is not None else None,
+            due_date if isinstance(due_date, str) else None,
+            date.today().isoformat(),
+        )
+
+    def _cached_calendar_widget(
+        self,
+        task: Task | None,
+        cache_key: tuple[str | None, str | None, str],
+    ) -> RenderableType:
+        cached = self._calendar_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        renderable = build_calendar_widget(task)
+        self._calendar_render_cache[cache_key] = renderable
+        return renderable
 
     def _build_status_bar(self) -> RenderableType:
-        return build_status_bar(self.status, busy=self.busy, body_text_style=self.BODY_TEXT_STYLE)
+        key = (self.status, self.busy)
+        renderable = self._status_render_cache.get(key)
+        if renderable is None:
+            renderable = build_status_bar(self.status, busy=self.busy, body_text_style=self.BODY_TEXT_STYLE)
+            self._status_render_cache[key] = renderable
+        return renderable
 
     def _task_panel_title(self, group: LabelGroup) -> str:
         return group.title

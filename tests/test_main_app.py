@@ -188,6 +188,24 @@ class MainHelpersTests(unittest.TestCase):
             border_style="red",
         )
 
+    def test_render_task_card_caches_renderables_by_task_state(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        app._task_card_render_cache = {}
+        app.label_name_colors = {}
+        task = make_task("task-1", "Alpha")
+        inactive_card = object()
+        active_card = object()
+
+        with patch("main.build_task_card", side_effect=[inactive_card, active_card]) as build_task_card_mock:
+            first = TodoistKanbanApp._render_task_card(app, task, selected=False, accent="red")
+            second = TodoistKanbanApp._render_task_card(app, task, selected=False, accent="red")
+            selected = TodoistKanbanApp._render_task_card(app, task, selected=True, accent="red")
+
+        self.assertIs(first, inactive_card)
+        self.assertIs(second, inactive_card)
+        self.assertIs(selected, active_card)
+        self.assertEqual(build_task_card_mock.call_count, 2)
+
     def test_group_button_label_uses_navigation_markers(self) -> None:
         app = TodoistKanbanApp.__new__(TodoistKanbanApp)
 
@@ -598,6 +616,26 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(app.active_pane, "tasks")
             self.assertEqual(app.selected_task.id, "task-2")
+
+    async def test_task_navigation_reuses_visible_task_widgets(self) -> None:
+        app = SnapshotPilotApp(
+            make_snapshot(
+                tasks=[make_task(f"task-{index}", f"Task {index}", order=index) for index in range(6)],
+                labels=[],
+            )
+        )
+
+        async with app.run_test(size=(90, 24)) as pilot:
+            await pilot.pause()
+            initial_cards = list(app.query(TaskCardWidget))
+            initial_ids = [id(card) for card in initial_cards]
+
+            await pilot.press("down")
+            await pilot.pause()
+            updated_cards = list(app.query(TaskCardWidget))
+
+            self.assertEqual(app.selected_task.id, "task-1")
+            self.assertEqual([id(card) for card in updated_cards], initial_ids)
 
     async def test_inactive_panes_use_grayish_border(self) -> None:
         app = SnapshotPilotApp(make_snapshot(tasks=[make_task("task-1", "Alpha")], labels=[]))
