@@ -38,4 +38,4 @@ Issues = "https://github.com/Coderbeep/todoist-tui/issues"
 todoist-tui = "main:main"
 
 [tool.setuptools]
-py-modules = ["main", "app_types", "app_utils", "screens", "ui_styles", "views"]
+py-modules = ["main", "app_types", "app_utils", "md_sync", "screens", "ui_styles", "views"]

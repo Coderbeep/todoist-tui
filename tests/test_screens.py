@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea
+from textual.widgets import Button, Checkbox, Input, Markdown, Select, Static, TextArea
 
 from app_types import LabelFormData, LabelMutationRequest, TaskFormData
+from md_sync import MarkdownNote, SyncAction, SyncPlan, SyncPreview, SyncResolution, TaskPayload, TodoistTaskReplica
 from screens import (
     ConfirmScreen,
     LabelEditorScreen,
     LabelManagerScreen,
     LabelSuggester,
+    SyncPreviewScreen,
     TaskEditorScreen,
     split_label_input,
 )
@@ -72,6 +75,22 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
 
         self.assertFalse(app.result)
+
+    async def test_confirm_screen_matches_modal_chrome(self) -> None:
+        app = ModalHostApp(ConfirmScreen("Complete task", "Proceed?", confirm_label="Complete"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            shell = screen.query_one("#confirm-shell", Container)
+            message = screen.query_one("#confirm-message", Static)
+            cancel_button = screen.query_one("#confirm-no", Button)
+            confirm_button = screen.query_one("#confirm-yes", Button)
+
+            self.assertEqual(shell.border_title, "Complete task")
+            self.assertEqual(message.content, "Proceed?")
+            self.assertTrue(cancel_button.compact)
+            self.assertTrue(confirm_button.compact)
 
     async def test_task_editor_escape_cancels(self) -> None:
         labels = [make_label("label-1", "alpha")]
@@ -301,3 +320,126 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(label_list.border_title)
             self.assertIsNone(label_list.border_subtitle)
             self.assertTrue(add_button.compact)
+
+    async def test_sync_preview_screen_renders_summary_and_closes(self) -> None:
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=2,
+            record_count=1,
+            plan=SyncPlan(
+                actions=(
+                    SyncAction(
+                        kind="create_todoist",
+                        sync_id="sync-1",
+                        reason="Create a remote task.",
+                    ),
+                ),
+                conflicts=(),
+            ),
+        )
+        app = ModalHostApp(SyncPreviewScreen(preview))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            shell = screen.query_one("#sync-preview-shell", Container)
+            summary = screen.query_one("#sync-preview-summary", Static)
+            action_list = screen.query_one("#sync-preview-list", Static)
+            markdown = screen.query_one("#sync-preview-markdown", Markdown)
+
+            self.assertEqual(shell.border_title, "Markdown sync preview")
+            self.assertIn("/notes", summary.content)
+            self.assertIn("create_todoist", action_list.content)
+            self.assertIn("create_todoist", markdown._markdown)
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+        self.assertIsNone(app.result)
+
+    async def test_sync_preview_screen_returns_selected_action_on_enter(self) -> None:
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=2,
+            record_count=0,
+            plan=SyncPlan(
+                actions=(
+                    SyncAction(kind="create_todoist", sync_id="sync-1", reason="First"),
+                    SyncAction(kind="create_markdown", sync_id="sync-2", reason="Second"),
+                ),
+            ),
+        )
+        app = ModalHostApp(SyncPreviewScreen(preview))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+        self.assertIsInstance(app.result, SyncAction)
+        self.assertEqual(app.result.sync_id, "sync-2")
+
+    async def test_sync_preview_screen_returns_keep_markdown_resolution_for_conflict(self) -> None:
+        conflict = SyncAction(
+            kind="conflict",
+            sync_id="sync-1",
+            reason="Both replicas changed.",
+            markdown_path=Path("/notes/task.md"),
+            todoist_id="todoist-1",
+            details={"type": "concurrent-edit"},
+            markdown_note=MarkdownNote(
+                path=Path("/notes/task.md"),
+                payload=TaskPayload(title="Local title", body="Local body", labels=("alpha",), due="tomorrow"),
+                sync_id="sync-1",
+                todoist_id="todoist-1",
+            ),
+            todoist_task=TodoistTaskReplica(
+                task_id="todoist-1",
+                payload=TaskPayload(title="Remote title", body="Remote body", labels=("beta",), due="friday"),
+                updated_at="2026-04-11T08:30:00Z",
+            ),
+        )
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=1,
+            record_count=1,
+            plan=SyncPlan(conflicts=(conflict,)),
+        )
+        app = ModalHostApp(SyncPreviewScreen(preview))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            local_pane = screen.query_one("#sync-preview-conflict-local", Markdown)
+            remote_pane = screen.query_one("#sync-preview-conflict-remote", Markdown)
+
+            self.assertIn("Local title", local_pane._markdown)
+            self.assertIn("Remote title", remote_pane._markdown)
+            await pilot.press("m")
+            await pilot.pause()
+
+        self.assertIsInstance(app.result, SyncResolution)
+        self.assertEqual(app.result.winner, "markdown")
+        self.assertEqual(app.result.conflict.sync_id, "sync-1")
+
+    async def test_sync_preview_screen_surfaces_error_text(self) -> None:
+        preview = SyncPreview(
+            notes_root=Path("/notes"),
+            state_path=Path("/notes/.todoist-sync-state.json"),
+            note_count=0,
+            record_count=0,
+            plan=SyncPlan(),
+        )
+        app = ModalHostApp(SyncPreviewScreen(preview, "Missing notes root"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            summary = app.screen.query_one("#sync-preview-summary", Static)
+            markdown = app.screen.query_one("#sync-preview-markdown", Markdown)
+
+            self.assertIn("Missing notes root", summary.content)
+            self.assertIn("## Error", markdown._markdown)

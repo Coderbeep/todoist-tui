@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from pathlib import Path
 import time
 from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date
 from itertools import groupby
 from typing import Callable
 
@@ -24,8 +27,38 @@ from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelFormData, LabelGroup, LabelMutationRequest, MutationResult, SelectionState, TaskFormData, TodoistSnapshot
-from app_utils import build_label_groups, compact_text, flatten_pages, format_error
-from screens import ConfirmScreen, LabelManagerScreen, TaskEditorScreen
+from app_utils import build_label_groups, compact_text, flatten_pages, format_error, task_window
+from md_sync import (
+    BIND,
+    CONFLICT,
+    CREATE_MARKDOWN,
+    CREATE_TODOIST,
+    DEFAULT_MARKDOWN_ROOT,
+    DELETE_MARKDOWN,
+    DELETE_TODOIST,
+    SyncAction,
+    SyncPlan,
+    SyncPreview,
+    SyncRecord,
+    SyncResolution,
+    TaskPayload,
+    TodoistTaskReplica,
+    UPDATE_MARKDOWN,
+    UPDATE_TODOIST,
+    build_sync_preview,
+    choose_markdown_note_path,
+    default_sync_state_path,
+    load_sync_records,
+    remove_sync_record,
+    read_markdown_note,
+    save_sync_records,
+    summarize_sync_preview,
+    todoist_task_to_replica,
+    upsert_sync_record,
+    write_markdown_note,
+    MarkdownNote,
+)
+from screens import ConfirmScreen, LabelManagerScreen, SyncPreviewScreen, TaskEditorScreen
 from views import build_calendar_widget, build_detail_markdown, build_detail_panel, build_status_bar, build_task_card, build_task_panel, build_workspace_header, group_label
 
 
@@ -85,6 +118,56 @@ class AppFooter(BaseFooter):
                     ).data_bind(compact=BaseFooter.compact)
 
 
+class TaskCardWidget(Static):
+    def __init__(
+        self,
+        task_id: str,
+        renderable: RenderableType,
+        *,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(renderable, classes=classes)
+        self.task_id = task_id
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if not isinstance(app, TodoistKanbanApp):
+            return
+        app.select_task_by_click(self.task_id)
+
+
+class GroupChipButton(Button):
+    def __init__(self, group_key: str, label, *, classes: str | None = None) -> None:
+        super().__init__(label, classes=classes)
+        self.group_key = group_key
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if not isinstance(app, TodoistKanbanApp):
+            return
+        app.select_group_by_click(self.group_key)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskListEntry:
+    kind: str
+    task_id: str | None
+    renderable: RenderableType
+    classes: str
+
+
+class ActivePaneScroll(VerticalScroll):
+    def __init__(self, pane_name: str, *children, **kwargs) -> None:
+        super().__init__(*children, **kwargs)
+        self.pane_name = pane_name
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        app = self.app
+        if not isinstance(app, TodoistKanbanApp):
+            return
+        app.activate_pane_from_mouse(self.pane_name)
+
+
 class TodoistGateway:
     def __init__(self, token: str, due_lang: str = "en") -> None:
         self.due_lang = due_lang
@@ -125,6 +208,19 @@ class TodoistGateway:
             payload["due_lang"] = self.due_lang
         return self.api.update_task(task.id, **payload)
 
+    def update_task_by_id(self, task_id: str, payload: TaskPayload) -> Task:
+        kwargs = self._task_payload_kwargs(payload)
+        if payload.due is None:
+            kwargs["due_string"] = "no due date"
+            kwargs["due_lang"] = self.due_lang
+        return self.api.update_task(task_id, **kwargs)
+
+    def create_task_from_payload(self, inbox_project_id: str, payload: TaskPayload) -> Task:
+        return self.api.add_task(
+            project_id=inbox_project_id,
+            **self._task_payload_kwargs(payload),
+        )
+
     def complete_task(self, task_id: str) -> None:
         if not self.api.complete_task(task_id):
             raise RuntimeError("Todoist did not confirm the task completion request.")
@@ -153,15 +249,25 @@ class TodoistGateway:
             raise RuntimeError("Todoist did not confirm the label deletion request.")
 
     def _task_kwargs(self, form: TaskFormData) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "content": form.content,
-            "description": form.description,
-            "labels": form.labels,
+        return self._task_payload_kwargs(
+            TaskPayload(
+                title=form.content,
+                body=form.description,
+                labels=tuple(form.labels),
+                due=form.due_string,
+            )
+        )
+
+    def _task_payload_kwargs(self, payload: TaskPayload) -> dict[str, object]:
+        kwargs: dict[str, object] = {
+            "content": payload.title,
+            "description": payload.body,
+            "labels": list(payload.labels),
         }
-        if form.due_string:
-            payload["due_string"] = form.due_string
-            payload["due_lang"] = self.due_lang
-        return payload
+        if payload.due:
+            kwargs["due_string"] = payload.due
+            kwargs["due_lang"] = self.due_lang
+        return kwargs
 
 
 class TodoistKanbanApp(App[None]):
@@ -185,6 +291,7 @@ class TodoistKanbanApp(App[None]):
         Binding("e,enter", "edit_task", "Edit", key_display="e/Enter"),
         Binding("space", "complete_task", "Complete"),
         Binding("x", "delete_task", "Delete"),
+        Binding("s", "show_sync_preview", "Sync"),
         Binding("L", "manage_labels", "Labels", key_display="Shift+L"),
         Binding("r", "refresh_data", "Refresh"),
         Binding("q", "quit", "Quit"),
@@ -196,7 +303,14 @@ class TodoistKanbanApp(App[None]):
     NAVIGATION_KEYS = {"left", "right", "up", "down", "h", "j", "k", "l"}
     PANE_ORDER = ("groups", "tasks", "inspector")
 
-    def __init__(self, token: str, due_lang: str = "en") -> None:
+    def __init__(
+        self,
+        token: str,
+        due_lang: str = "en",
+        *,
+        sync_root: Path | str = DEFAULT_MARKDOWN_ROOT,
+        sync_state_path: Path | str | None = None,
+    ) -> None:
         super().__init__()
         self.gateway = TodoistGateway(token, due_lang=due_lang)
         self.inbox_project_id: str | None = None
@@ -213,8 +327,23 @@ class TodoistKanbanApp(App[None]):
         self.status = "Connecting to Todoist..."
         self.busy = False
         self._group_buttons: dict[str, Button] = {}
+        self._group_button_state: dict[str, tuple[str, bool, str]] = {}
+        self._pane_chrome_state: tuple[str, str, int] | None = None
+        self._task_card_render_cache: dict[tuple[str, bool, str], RenderableType] = {}
+        self._detail_panel_render_cache: dict[tuple[str | None, str], RenderableType] = {}
+        self._detail_markdown_cache: dict[str | None, str] = {}
+        self._calendar_render_cache: dict[tuple[str | None, str | None, str], RenderableType] = {}
+        self._header_render_cache: dict[tuple[str, int, int, bool], RenderableType] = {}
+        self._status_render_cache: dict[tuple[str, bool], RenderableType] = {}
+        self._last_detail_panel_key: tuple[str | None, str] | None = None
+        self._last_detail_markdown_text: str | None = None
+        self._last_calendar_key: tuple[str | None, str | None, str] | None = None
         self._last_navigation_key: str | None = None
         self._last_navigation_time = 0.0
+        self.sync_root = Path(sync_root)
+        self.sync_state_path = Path(sync_state_path) if sync_state_path is not None else default_sync_state_path(self.sync_root)
+        self.sync_preview = self._empty_sync_preview()
+        self.sync_preview_error: str | None = None
         self.register_theme(ui.APP_THEME)
         self.theme = ui.APP_THEME.name
 
@@ -222,11 +351,12 @@ class TodoistKanbanApp(App[None]):
         with Container(id="app-shell"):
             yield Static(id="workspace-header")
             with Horizontal(id="content"):
-                with VerticalScroll(id="group-rail"):
+                with ActivePaneScroll("groups", id="group-rail"):
                     yield Vertical(id="group-strip")
-                yield Static(id="task-panel")
+                with ActivePaneScroll("tasks", id="task-panel"):
+                    yield Vertical(id="task-list")
                 with Vertical(id="detail-stack"):
-                    with VerticalScroll(id="detail-panel"):
+                    with ActivePaneScroll("inspector", id="detail-panel"):
                         yield Static(id="detail-summary")
                         yield Markdown(id="detail-markdown", open_links=False)
                     yield Static(id="calendar-panel")
@@ -269,8 +399,26 @@ class TodoistKanbanApp(App[None]):
         )
         if group_key is None:
             return
+        self.select_group_by_click(group_key)
+
+    def select_group_by_click(self, group_key: str) -> None:
+        if not self._is_main_screen_active():
+            return
+        self._set_active_pane("groups")
         self._select_group_by_key(group_key)
         self._refresh_group_and_task_views()
+
+    def select_task_by_click(self, task_id: str) -> None:
+        if not self._is_main_screen_active():
+            return
+        self._set_active_pane("tasks")
+        self._select_task_by_id(task_id)
+        self._refresh_task_views()
+
+    def activate_pane_from_mouse(self, pane: str) -> None:
+        if not self._is_main_screen_active():
+            return
+        self._set_active_pane(pane)
 
     def on_key(self, event: events.Key) -> None:
         if not self._is_main_screen_active():
@@ -409,10 +557,28 @@ class TodoistKanbanApp(App[None]):
             return
         self.push_screen(LabelManagerScreen(self.labels), self._finish_label_request)
 
+    def action_show_sync_preview(self) -> None:
+        if self.busy:
+            return
+        self.push_screen(
+            SyncPreviewScreen(self.sync_preview, self.sync_preview_error),
+            self._finish_sync_preview,
+        )
+
     def action_refresh_data(self) -> None:
         if self.busy:
             return
         self.load_snapshot()
+
+    def _finish_sync_preview(self, result: SyncAction | SyncResolution | None) -> None:
+        if result is None:
+            self.status = "Sync preview closed."
+            self._refresh_status()
+            return
+        if isinstance(result, SyncResolution):
+            self.run_sync_resolution(result)
+            return
+        self.run_sync_action(result)
 
     def _finish_new_task(self, form: TaskFormData | None) -> None:
         if form is None or self.inbox_project_id is None:
@@ -537,7 +703,13 @@ class TodoistKanbanApp(App[None]):
         self._set_busy(True, "Refreshing Inbox tasks and labels...")
         try:
             snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
-            await self._apply_snapshot(snapshot)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
+            await self._apply_snapshot(snapshot, sync_preview=sync_preview, sync_error=sync_error)
+            if sync_messages:
+                message = self._auto_sync_status(sync_messages, sync_preview, sync_error)
+                self.notify(message, title="Markdown sync", severity="information", markup=False)
+                self.status = message
+                self._refresh_status()
         except Exception as error:
             self._handle_error("Couldn't load Todoist data.", error)
         finally:
@@ -553,18 +725,28 @@ class TodoistKanbanApp(App[None]):
         try:
             result = await asyncio.to_thread(operation)
             snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
             await self._apply_snapshot(
                 snapshot,
                 selected_task_id=result.task_id,
                 selected_group_key=result.group_key,
+                sync_preview=sync_preview,
+                sync_error=sync_error,
             )
-            self.status = result.message
+            self.status = self._combine_status(result.message, sync_messages, sync_preview, sync_error)
             self.notify(
                 result.message,
                 title="Todoist",
                 severity="information",
                 markup=False,
             )
+            if sync_messages:
+                self.notify(
+                    self._auto_sync_status(sync_messages, sync_preview, sync_error),
+                    title="Markdown sync",
+                    severity="information",
+                    markup=False,
+                )
             self._refresh_status()
         except Exception as error:
             self._handle_error("Todoist request failed.", error)
@@ -577,6 +759,8 @@ class TodoistKanbanApp(App[None]):
         *,
         selected_task_id: str | None = None,
         selected_group_key: str | None = None,
+        sync_preview: SyncPreview | None = None,
+        sync_error: str | None = None,
     ) -> None:
         self.inbox_project_id = snapshot.inbox.id
         self.inbox_name = snapshot.inbox.name
@@ -591,9 +775,13 @@ class TodoistKanbanApp(App[None]):
             label.name.casefold(): ui.COLOR_HEX_BY_NAME.get(label.color, ui.TEXT_MUTED)
             for label in self.labels
         }
+        self._clear_render_caches()
 
         desired_group_key = selected_group_key or self.selection.current_group_key
         desired_task_id = selected_task_id or self.selection.current_task_id
+
+        if sync_preview is not None or sync_error is not None:
+            self._set_sync_preview(sync_preview, sync_error)
 
         self.groups = build_label_groups(self.tasks, self.labels)
         await self._sync_group_strip()
@@ -604,9 +792,295 @@ class TodoistKanbanApp(App[None]):
         )
         self.status = (
             f"{self.inbox_name} loaded with {len(self.tasks)} active task(s) "
-            f"across {len(self.groups)} group(s)."
+            f"across {len(self.groups)} group(s). {self._sync_status_message()}"
         )
         self._refresh_ui()
+
+    async def _load_sync_preview(self, tasks: list[Task]) -> tuple[SyncPreview, str | None]:
+        try:
+            preview = await asyncio.to_thread(
+                build_sync_preview,
+                tasks,
+                notes_root=self.sync_root,
+                state_path=self.sync_state_path,
+            )
+            return (preview, None)
+        except Exception as error:
+            return (self._empty_sync_preview(), format_error(error))
+
+    async def _converge_sync(
+        self,
+        snapshot: TodoistSnapshot,
+    ) -> tuple[TodoistSnapshot, SyncPreview, str | None, list[str]]:
+        current_snapshot = snapshot
+        sync_preview, sync_error = await self._load_sync_preview(current_snapshot.tasks)
+        messages: list[str] = []
+
+        for _ in range(100):
+            if sync_error or not sync_preview.plan.actions:
+                return current_snapshot, sync_preview, sync_error, messages
+
+            messages.extend(await asyncio.to_thread(self._apply_sync_actions, sync_preview.plan.actions))
+            current_snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
+            sync_preview, sync_error = await self._load_sync_preview(current_snapshot.tasks)
+
+        raise RuntimeError("Automatic markdown sync did not converge after 100 passes.")
+
+    @work(exclusive=True, group="todoist", exit_on_error=False)
+    async def run_sync_action(self, action: SyncAction) -> None:
+        self._set_busy(True, f"Applying sync action: {action.kind}...")
+        try:
+            message = await asyncio.to_thread(self._apply_sync_action, action)
+            snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
+            await self._apply_snapshot(snapshot, sync_preview=sync_preview, sync_error=sync_error)
+            self.status = self._combine_status(message, sync_messages, sync_preview, sync_error)
+            self.notify(message, title="Markdown sync", severity="information", markup=False)
+            if sync_messages:
+                self.notify(
+                    self._auto_sync_status(sync_messages, sync_preview, sync_error),
+                    title="Markdown sync",
+                    severity="information",
+                    markup=False,
+                )
+            self._refresh_status()
+        except Exception as error:
+            self._handle_error("Sync action failed.", error)
+        finally:
+            self._set_busy(False)
+
+    @work(exclusive=True, group="todoist", exit_on_error=False)
+    async def run_sync_resolution(self, resolution: SyncResolution) -> None:
+        winner = "markdown" if resolution.winner == "markdown" else "Todoist"
+        self._set_busy(True, f"Resolving sync conflict by keeping {winner}...")
+        try:
+            message = await asyncio.to_thread(self._apply_sync_resolution, resolution)
+            snapshot = await asyncio.to_thread(self.gateway.load_snapshot)
+            snapshot, sync_preview, sync_error, sync_messages = await self._converge_sync(snapshot)
+            await self._apply_snapshot(snapshot, sync_preview=sync_preview, sync_error=sync_error)
+            self.status = self._combine_status(message, sync_messages, sync_preview, sync_error)
+            self.notify(message, title="Markdown sync", severity="information", markup=False)
+            if sync_messages:
+                self.notify(
+                    self._auto_sync_status(sync_messages, sync_preview, sync_error),
+                    title="Markdown sync",
+                    severity="information",
+                    markup=False,
+                )
+            self._refresh_status()
+        except Exception as error:
+            self._handle_error("Sync resolution failed.", error)
+        finally:
+            self._set_busy(False)
+
+    def _apply_sync_actions(self, actions: tuple[SyncAction, ...]) -> list[str]:
+        return [self._apply_sync_action(action) for action in actions]
+
+    def _apply_sync_action(self, action: SyncAction) -> str:
+        if action.kind == CONFLICT:
+            raise RuntimeError("Conflicts must be resolved manually.")
+
+        records = load_sync_records(self.sync_state_path)
+
+        if action.kind == CREATE_TODOIST:
+            if self.inbox_project_id is None or action.payload is None or action.markdown_path is None:
+                raise RuntimeError("Sync action is missing Inbox or markdown payload context.")
+            created = self.gateway.create_task_from_payload(self.inbox_project_id, action.payload)
+            note = MarkdownNote(
+                path=action.markdown_path,
+                payload=action.payload,
+                sync_id=action.sync_id,
+                todoist_id=created.id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    action.sync_id,
+                    markdown=note,
+                    todoist=todoist_task_to_replica(created),
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Created Todoist task for '{action.payload.title}'."
+
+        if action.kind == CREATE_MARKDOWN:
+            if action.payload is None or action.todoist_id is None:
+                raise RuntimeError("Sync action is missing markdown creation payload.")
+            note = MarkdownNote(
+                path=choose_markdown_note_path(self.sync_root, action.payload),
+                payload=action.payload,
+                sync_id=action.sync_id,
+                todoist_id=action.todoist_id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    action.sync_id,
+                    markdown=note,
+                    todoist=_replica_from_action(action),
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Created markdown note for '{action.payload.title}'."
+
+        if action.kind == UPDATE_TODOIST:
+            if action.payload is None or action.todoist_id is None or action.markdown_path is None:
+                raise RuntimeError("Sync action is missing Todoist update context.")
+            updated = self.gateway.update_task_by_id(action.todoist_id, action.payload)
+            note = MarkdownNote(
+                path=action.markdown_path,
+                payload=action.payload,
+                sync_id=action.sync_id,
+                todoist_id=updated.id,
+            )
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    action.sync_id,
+                    markdown=note,
+                    todoist=todoist_task_to_replica(updated),
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Updated Todoist task from '{action.payload.title}'."
+
+        if action.kind == UPDATE_MARKDOWN:
+            if action.payload is None or action.todoist_id is None:
+                raise RuntimeError("Sync action is missing markdown update context.")
+            path = action.markdown_path or self._record_markdown_path(records, action.sync_id)
+            note = MarkdownNote(
+                path=path,
+                payload=action.payload,
+                sync_id=action.sync_id,
+                todoist_id=action.todoist_id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    action.sync_id,
+                    markdown=note,
+                    todoist=_replica_from_action(action),
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Updated markdown note from Todoist task '{action.payload.title}'."
+
+        if action.kind == DELETE_MARKDOWN:
+            if action.markdown_path is None:
+                raise RuntimeError("Sync action is missing markdown delete path.")
+            action.markdown_path.unlink(missing_ok=True)
+            records = remove_sync_record(records, action.sync_id)
+            save_sync_records(self.sync_state_path, records)
+            return f"Deleted markdown note for sync id '{action.sync_id}'."
+
+        if action.kind == DELETE_TODOIST:
+            if action.todoist_id is None:
+                raise RuntimeError("Sync action is missing Todoist delete id.")
+            self.gateway.delete_task(action.todoist_id)
+            records = remove_sync_record(records, action.sync_id)
+            save_sync_records(self.sync_state_path, records)
+            return f"Deleted Todoist task '{action.todoist_id}'."
+
+        if action.kind == BIND:
+            if action.todoist_id is None:
+                raise RuntimeError("Sync bind action is missing Todoist id.")
+            path = action.markdown_path or self._record_markdown_path(records, action.sync_id)
+            payload = action.payload or self._payload_from_existing_note(path)
+            note = MarkdownNote(
+                path=path,
+                payload=payload,
+                sync_id=action.sync_id,
+                todoist_id=action.todoist_id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    action.sync_id,
+                    markdown=note,
+                    todoist=_replica_from_action(
+                        SyncAction(
+                            kind=action.kind,
+                            sync_id=action.sync_id,
+                            reason=action.reason,
+                            payload=payload,
+                            markdown_path=path,
+                            todoist_id=action.todoist_id,
+                        )
+                    ),
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Bound markdown note to Todoist task '{action.todoist_id}'."
+
+        raise RuntimeError(f"Unsupported sync action: {action.kind}")
+
+    def _apply_sync_resolution(self, resolution: SyncResolution) -> str:
+        conflict = resolution.conflict
+        if conflict.kind != CONFLICT:
+            raise RuntimeError("Sync resolution requires a conflict.")
+        if conflict.markdown_note is None or conflict.todoist_task is None:
+            raise RuntimeError("This conflict does not yet support in-app resolution.")
+
+        records = load_sync_records(self.sync_state_path)
+
+        if resolution.winner == "markdown":
+            updated = self.gateway.update_task_by_id(
+                conflict.todoist_task.task_id,
+                conflict.markdown_note.payload,
+            )
+            note = MarkdownNote(
+                path=conflict.markdown_note.path,
+                payload=conflict.markdown_note.payload,
+                sync_id=conflict.sync_id,
+                todoist_id=updated.id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    conflict.sync_id,
+                    markdown=note,
+                    todoist=todoist_task_to_replica(updated),
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Resolved conflict by keeping markdown for '{note.payload.title}'."
+
+        if resolution.winner == "todoist":
+            note = MarkdownNote(
+                path=conflict.markdown_note.path,
+                payload=conflict.todoist_task.payload,
+                sync_id=conflict.sync_id,
+                todoist_id=conflict.todoist_task.task_id,
+            )
+            write_markdown_note(note)
+            records = upsert_sync_record(
+                records,
+                SyncRecord.capture(
+                    conflict.sync_id,
+                    markdown=note,
+                    todoist=conflict.todoist_task,
+                ),
+            )
+            save_sync_records(self.sync_state_path, records)
+            return f"Resolved conflict by keeping Todoist for '{note.payload.title}'."
+
+        raise RuntimeError(f"Unsupported conflict resolution winner: {resolution.winner}")
+
+    @staticmethod
+    def _record_markdown_path(records: list[SyncRecord], sync_id: str) -> Path:
+        for record in records:
+            if record.sync_id == sync_id and record.markdown_path is not None:
+                return Path(record.markdown_path)
+        raise RuntimeError(f"Missing markdown path for sync id '{sync_id}'.")
+
+    @staticmethod
+    def _payload_from_existing_note(path: Path) -> TaskPayload:
+        return read_markdown_note(path).payload
 
     def _set_busy(self, busy: bool, message: str | None = None) -> None:
         self.busy = busy
@@ -620,6 +1094,48 @@ class TodoistKanbanApp(App[None]):
         self.status = message
         self.notify(message, title=title, severity="error", markup=False)
         self._refresh_status()
+
+    def _empty_sync_preview(self) -> SyncPreview:
+        return SyncPreview(
+            notes_root=self.sync_root,
+            state_path=self.sync_state_path,
+            note_count=0,
+            record_count=0,
+            plan=SyncPlan(),
+        )
+
+    def _set_sync_preview(self, preview: SyncPreview | None, error: str | None) -> None:
+        self.sync_preview = preview or self._empty_sync_preview()
+        self.sync_preview_error = error
+
+    def _sync_status_message(self) -> str:
+        if self.sync_preview_error:
+            return f"Markdown sync preview unavailable. Press s for details."
+        return f"Markdown sync preview: {summarize_sync_preview(self.sync_preview)}. Press s."
+
+    @staticmethod
+    def _auto_sync_status(
+        sync_messages: list[str],
+        sync_preview: SyncPreview,
+        sync_error: str | None,
+    ) -> str:
+        suffix = ""
+        if sync_error:
+            suffix = " Sync preview unavailable after automatic sync."
+        elif sync_preview.plan.conflicts:
+            suffix = f" {len(sync_preview.plan.conflicts)} conflict(s) still need manual resolution."
+        return f"Applied {len(sync_messages)} sync action(s) automatically.{suffix}"
+
+    def _combine_status(
+        self,
+        base_message: str,
+        sync_messages: list[str],
+        sync_preview: SyncPreview,
+        sync_error: str | None,
+    ) -> str:
+        if not sync_messages:
+            return base_message
+        return f"{base_message} {self._auto_sync_status(sync_messages, sync_preview, sync_error)}"
 
     def _preferred_task_group_key(self, label_names: list[str]) -> str:
         normalized = {name.casefold() for name in label_names}
@@ -699,10 +1215,11 @@ class TodoistKanbanApp(App[None]):
             )
             for key in obsolete_keys:
                 self._group_buttons.pop(key, None)
+                self._group_button_state.pop(key, None)
 
         for group in self.groups:
             if group.key not in self._group_buttons:
-                button = Button(self._group_button_label(group), classes="group-chip")
+                button = GroupChipButton(group.key, self._group_button_label(group), classes="group-chip")
                 self._group_buttons[group.key] = button
                 await strip.mount(button)
 
@@ -722,6 +1239,19 @@ class TodoistKanbanApp(App[None]):
 
         self._update_group_buttons()
 
+    def _clear_render_caches(self) -> None:
+        self._task_card_render_cache.clear()
+        self._detail_panel_render_cache.clear()
+        self._detail_markdown_cache.clear()
+        self._calendar_render_cache.clear()
+        self._header_render_cache.clear()
+        self._status_render_cache.clear()
+        self._group_button_state.clear()
+        self._pane_chrome_state = None
+        self._last_detail_panel_key = None
+        self._last_detail_markdown_text = None
+        self._last_calendar_key = None
+
     def _refresh_ui(self) -> None:
         if not self.is_mounted:
             return
@@ -735,10 +1265,27 @@ class TodoistKanbanApp(App[None]):
             return
 
         self._clamp_selection()
-        self.query_one("#task-panel", Static).update(self._build_task_panel())
-        self.query_one("#detail-summary", Static).update(self._build_detail_panel())
-        self.query_one("#detail-markdown", Markdown).update(build_detail_markdown(self.selected_task))
-        self.query_one("#calendar-panel", Static).update(build_calendar_widget(self.selected_task))
+        selected_group = self.selected_group
+        selected_task = self.selected_task
+        self._refresh_task_list()
+        detail_key = (selected_task.id if selected_task is not None else None, selected_group.key)
+        if detail_key != self._last_detail_panel_key:
+            self.query_one("#detail-summary", Static).update(
+                self._cached_detail_panel(selected_task, selected_group)
+            )
+            self._last_detail_panel_key = detail_key
+
+        markdown_text = self._cached_detail_markdown(selected_task)
+        if markdown_text != self._last_detail_markdown_text:
+            self.query_one("#detail-markdown", Markdown).update(markdown_text)
+            self._last_detail_markdown_text = markdown_text
+
+        calendar_key = self._calendar_cache_key(selected_task)
+        if calendar_key != self._last_calendar_key:
+            self.query_one("#calendar-panel", Static).update(
+                self._cached_calendar_widget(selected_task, calendar_key)
+            )
+            self._last_calendar_key = calendar_key
 
     def _refresh_group_and_task_views(self) -> None:
         if not self.is_mounted:
@@ -751,7 +1298,7 @@ class TodoistKanbanApp(App[None]):
             return
         self._clamp_selection()
         selected_group = self.selected_group
-        task_panel = self.query_one("#task-panel", Static)
+        task_panel = self.query_one("#task-panel", VerticalScroll)
         task_panel.border_title = self._task_panel_title(selected_group)
         task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
         self._refresh_pane_chrome()
@@ -760,14 +1307,17 @@ class TodoistKanbanApp(App[None]):
     def _refresh_header(self) -> None:
         if not self.is_mounted:
             return
-        self.query_one("#workspace-header", Static).update(
-            build_workspace_header(
+        key = (self.inbox_name, len(self.tasks), len(self.labels), self.busy)
+        renderable = self._header_render_cache.get(key)
+        if renderable is None:
+            renderable = build_workspace_header(
                 self.inbox_name,
                 len(self.tasks),
                 len(self.labels),
                 busy=self.busy,
             )
-        )
+            self._header_render_cache[key] = renderable
+        self.query_one("#workspace-header", Static).update(renderable)
 
     def _refresh_status(self) -> None:
         if not self.is_mounted:
@@ -779,8 +1329,14 @@ class TodoistKanbanApp(App[None]):
             button = self._group_buttons.get(group.key)
             if button is None:
                 continue
-            button.label = self._group_button_label(group)
-            if index == self.selection.group_index:
+            label = self._group_button_label(group)
+            selected = index == self.selection.group_index
+            state = (label, selected, self.active_pane if selected else "")
+            if self._group_button_state.get(group.key) == state:
+                continue
+
+            button.label = label
+            if selected:
                 button.add_class("is-active")
                 button.styles.border = ("none", ui.PANEL_SHADE)
                 button.styles.border_left = (
@@ -800,6 +1356,7 @@ class TodoistKanbanApp(App[None]):
                 button.styles.background = ui.PANEL_SHADE
                 button.styles.color = group.accent
                 button.styles.text_style = "none"
+            self._group_button_state[group.key] = state
 
     def _group_button_label(self, group: LabelGroup) -> str:
         if group.key == "all":
@@ -811,8 +1368,13 @@ class TodoistKanbanApp(App[None]):
         return f"{marker} {group_label(group)}"
 
     def _refresh_pane_chrome(self) -> None:
+        selected_group = self.selected_group
+        state = (self.active_pane, selected_group.key, len(selected_group.tasks))
+        if self._pane_chrome_state == state:
+            return
+
         group_rail = self.query_one("#group-rail", VerticalScroll)
-        task_panel = self.query_one("#task-panel", Static)
+        task_panel = self.query_one("#task-panel", VerticalScroll)
         detail_panel = self.query_one("#detail-panel", VerticalScroll)
 
         group_rail.border_title = "Labels"
@@ -822,7 +1384,7 @@ class TodoistKanbanApp(App[None]):
             ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "groups" else ("round", ui.INACTIVE_TASK_BORDER)
         )
 
-        task_panel.border_subtitle = self._task_panel_subtitle(self.selected_group)
+        task_panel.border_subtitle = self._task_panel_subtitle(selected_group)
         task_panel.styles.background = ui.PANEL_SHADE
         task_panel.styles.border = (
             ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "tasks" else ("round", ui.INACTIVE_TASK_BORDER)
@@ -834,8 +1396,11 @@ class TodoistKanbanApp(App[None]):
         detail_panel.styles.border = (
             ("heavy", ui.ACCENT_PRIMARY) if self.active_pane == "inspector" else ("round", ui.INACTIVE_TASK_BORDER)
         )
+        self._pane_chrome_state = state
 
     def _set_active_pane(self, pane: str) -> None:
+        if pane == self.active_pane and self._pane_chrome_state is not None:
+            return
         self.active_pane = pane
         if self.is_mounted:
             self._refresh_pane_chrome()
@@ -852,7 +1417,7 @@ class TodoistKanbanApp(App[None]):
         return getattr(self.screen, "id", None) == "_default"
 
     def _build_task_panel(self) -> RenderableType:
-        task_panel = self.query_one("#task-panel", Static)
+        task_panel = self.query_one("#task-panel", VerticalScroll)
         available_height = task_panel.size.height or self.size.height
         return build_task_panel(
             self.selected_group,
@@ -865,6 +1430,16 @@ class TodoistKanbanApp(App[None]):
         )
 
     def _render_task_card(self, task: Task, *, selected: bool, accent: str) -> RenderableType:
+        cache_key = (task.id, selected, accent)
+        cached = self._task_card_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        renderable = self._build_uncached_task_card(task, selected=selected, accent=accent)
+        self._task_card_render_cache[cache_key] = renderable
+        return renderable
+
+    def _build_uncached_task_card(self, task: Task, *, selected: bool, accent: str) -> RenderableType:
         return build_task_card(
             task,
             selected=selected,
@@ -876,17 +1451,166 @@ class TodoistKanbanApp(App[None]):
             border_style=ui.INACTIVE_TASK_BORDER,
         )
 
+    def _refresh_task_list(self) -> None:
+        task_list = self.query_one("#task-list", Vertical)
+        entries = self._task_list_entries()
+
+        if self._can_reuse_task_list_widgets(task_list.children, entries):
+            self._update_task_list_widgets(task_list.children, entries)
+            return
+
+        widgets: list[Static] = []
+        for entry in entries:
+            if entry.kind == "task":
+                widgets.append(
+                    TaskCardWidget(
+                        entry.task_id or "",
+                        entry.renderable,
+                        classes=entry.classes,
+                    )
+                )
+            else:
+                widgets.append(Static(entry.renderable, classes=entry.classes))
+
+        task_list.remove_children()
+        task_list.mount(*widgets)
+
+    def _task_list_entries(self) -> list[TaskListEntry]:
+        task_panel = self.query_one("#task-panel", VerticalScroll)
+        available_height = task_panel.size.height or self.size.height
+        selected_group = self.selected_group
+        tasks = selected_group.tasks
+        entries: list[TaskListEntry] = []
+
+        if not tasks:
+            return [
+                TaskListEntry(
+                    "message",
+                    None,
+                    self._build_task_panel(),
+                    "task-panel-message",
+                )
+            ]
+
+        visible_cards = max(2, (max(available_height, 18) - 6) // 4)
+        start, end = task_window(len(tasks), self.selection.task_index, visible_cards)
+
+        if start:
+            entries.append(
+                TaskListEntry(
+                    "hint",
+                    None,
+                    f"{start} earlier task{'s' if start != 1 else ''} above",
+                    "task-panel-hint",
+                )
+            )
+            entries.append(TaskListEntry("spacer", None, "", "task-panel-spacer"))
+
+        for index in range(start, end):
+            task = tasks[index]
+            entries.append(
+                TaskListEntry(
+                    "task",
+                    task.id,
+                    self._render_task_card(
+                        task,
+                        selected=index == self.selection.task_index,
+                        accent=selected_group.accent,
+                    ),
+                    "task-card-widget",
+                )
+            )
+
+        if end < len(tasks):
+            entries.append(TaskListEntry("spacer", None, "", "task-panel-spacer"))
+            entries.append(
+                TaskListEntry(
+                    "hint",
+                    None,
+                    f"{len(tasks) - end} more task{'s' if len(tasks) - end != 1 else ''} below",
+                    "task-panel-hint",
+                )
+            )
+
+        return entries
+
+    def _can_reuse_task_list_widgets(self, children, entries: list[TaskListEntry]) -> bool:
+        if len(children) != len(entries):
+            return False
+
+        for child, entry in zip(children, entries):
+            if entry.kind == "task":
+                if not isinstance(child, TaskCardWidget):
+                    return False
+                continue
+            if isinstance(child, TaskCardWidget) or not isinstance(child, Static):
+                return False
+            if entry.classes not in child.classes:
+                return False
+        return True
+
+    def _update_task_list_widgets(self, children, entries: list[TaskListEntry]) -> None:
+        for child, entry in zip(children, entries):
+            if isinstance(child, TaskCardWidget):
+                child.task_id = entry.task_id or ""
+            child.update(entry.renderable)
+
     def _build_detail_panel(self) -> RenderableType:
-        return build_detail_panel(
-            self.selected_task,
-            self.selected_group,
+        return self._cached_detail_panel(self.selected_task, self.selected_group)
+
+    def _cached_detail_panel(self, task: Task | None, group: LabelGroup) -> RenderableType:
+        cache_key = (task.id if task is not None else None, group.key)
+        cached = self._detail_panel_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        renderable = build_detail_panel(
+            task,
+            group,
             title_style=self.CARD_TITLE_STYLE,
             muted_style=self.MUTED_TEXT_STYLE,
             border_style=self.BORDER_STYLE,
         )
+        self._detail_panel_render_cache[cache_key] = renderable
+        return renderable
+
+    def _cached_detail_markdown(self, task: Task | None) -> str:
+        cache_key = task.id if task is not None else None
+        if cache_key in self._detail_markdown_cache:
+            return self._detail_markdown_cache[cache_key]
+
+        markdown = build_detail_markdown(task)
+        self._detail_markdown_cache[cache_key] = markdown
+        return markdown
+
+    def _calendar_cache_key(self, task: Task | None) -> tuple[str | None, str | None, str]:
+        due_date = getattr(getattr(task, "due", None), "date", None)
+        return (
+            task.id if task is not None else None,
+            due_date if isinstance(due_date, str) else None,
+            date.today().isoformat(),
+        )
+
+    def _cached_calendar_widget(
+        self,
+        task: Task | None,
+        cache_key: tuple[str | None, str | None, str],
+    ) -> RenderableType:
+        cached = self._calendar_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        renderable = build_calendar_widget(task)
+        self._calendar_render_cache[cache_key] = renderable
+        return renderable
 
     def _build_status_bar(self) -> RenderableType:
-        return build_status_bar(self.status, busy=self.busy, body_text_style=self.BODY_TEXT_STYLE)
+        key = (self.status, self.busy)
+        renderable = self._status_render_cache.get(key)
+        if renderable is None:
+            renderable = build_status_bar(self.status, busy=self.busy, body_text_style=self.BODY_TEXT_STYLE)
+            self._status_render_cache[key] = renderable
+        return renderable
 
     def _task_panel_title(self, group: LabelGroup) -> str:
         return group.title
@@ -906,6 +1630,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.getenv("TODOIST_DUE_LANG", "en"),
         help="Todoist due date language, for example en or pl.",
     )
+    parser.add_argument(
+        "--notes-root",
+        default=os.getenv("TODOIST_MARKDOWN_ROOT", str(DEFAULT_MARKDOWN_ROOT)),
+        help="Markdown notes root used for sync preview.",
+    )
     return parser.parse_args(argv)
 
 
@@ -918,10 +1647,35 @@ def resolve_token(cli_token: str | None) -> str:
     )
 
 
+def _replica_from_action(action: SyncAction) -> TodoistTaskReplica:
+    if action.payload is None or action.todoist_id is None:
+        raise RuntimeError("Sync action is missing payload or Todoist id.")
+    return todoist_task_to_replica(
+        type(
+            "SyncReplicaStub",
+            (),
+            {
+                "id": action.todoist_id,
+                "content": action.payload.title,
+                "description": action.payload.body,
+                "labels": list(action.payload.labels),
+                "due": type("DueStub", (), {"string": action.payload.due, "date": action.payload.due})()
+                if action.payload.due is not None
+                else None,
+                "updated_at": None,
+            },
+        )()
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    app = TodoistKanbanApp(resolve_token(args.token), due_lang=args.due_lang)
-    app.run(mouse=False)
+    app = TodoistKanbanApp(
+        resolve_token(args.token),
+        due_lang=args.due_lang,
+        sync_root=Path(args.notes_root),
+    )
+    app.run(mouse=True)
 
 
 if __name__ == "__main__":

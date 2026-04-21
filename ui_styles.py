@@ -162,6 +162,7 @@ Button.group-chip.is-active {{
     height: 1fr;
     padding: 1 2;
     margin-right: 1;
+    scrollbar-size-vertical: 1;
     background: {PANEL_SHADE};
     border: round {INACTIVE_TASK_BORDER};
     border-title-align: center;
@@ -170,6 +171,32 @@ Button.group-chip.is-active {{
     border-title-color: {TEXT_PRIMARY};
     border-subtitle-style: bold;
     border-subtitle-color: {TEXT_MUTED};
+}}
+
+#task-list {{
+    width: 1fr;
+    height: auto;
+    background: {PANEL_SHADE};
+}}
+
+.task-card-widget {{
+    width: 1fr;
+    height: auto;
+    background: transparent;
+}}
+
+.task-panel-hint {{
+    color: {ACCENT_BORDER};
+    background: transparent;
+}}
+
+.task-panel-message {{
+    background: transparent;
+}}
+
+.task-panel-spacer {{
+    height: 1;
+    background: transparent;
 }}
 
 #detail-stack {{
@@ -329,9 +356,40 @@ CONFIRM_SCREEN_CSS = build_modal_css(
     "confirm-shell",
     68,
     92,
+    screen_selector="ConfirmScreen",
     overlay_opacity=78,
     actions_id="confirm-actions",
-)
+) + f"""
+
+#confirm-shell {{
+    min-width: 52;
+    max-height: 94%;
+    background: {PANEL_SHADE};
+    border: round {ACCENT_BORDER_BLURRED};
+    border-title-align: center;
+    border-title-color: {TEXT_PRIMARY};
+    border-title-style: bold;
+}}
+
+#confirm-message {{
+    margin-top: 1;
+    margin-bottom: 1;
+    color: {TEXT_MUTED};
+}}
+
+#confirm-actions {{
+    margin-top: 2;
+    border-top: heavy {INACTIVE_TASK_BORDER};
+    padding-top: 1;
+    align-horizontal: right;
+}}
+
+#confirm-actions Button {{
+    width: auto;
+    min-width: 0;
+    padding: 0 2;
+}}
+"""
 
 TASK_EDITOR_SCREEN_CSS = (
     build_modal_css(
@@ -527,6 +585,90 @@ LABEL_MANAGER_SCREEN_CSS = (
 }}
 
 #label-manager-actions Button {{
+    width: auto;
+    min-width: 0;
+    padding: 0 2;
+}}
+"""
+)
+
+SYNC_PREVIEW_SCREEN_CSS = (
+    build_modal_css(
+        "sync-preview-shell",
+        96,
+        120,
+        screen_selector="SyncPreviewScreen",
+        overlay_opacity=78,
+        max_height="94%",
+        actions_id="sync-preview-actions",
+    )
+    + f"""
+
+#sync-preview-shell {{
+    min-width: 72;
+    max-height: 94%;
+    background: {PANEL_SHADE};
+    border: round {ACCENT_BORDER_BLURRED};
+    border-title-align: center;
+    border-title-color: {TEXT_PRIMARY};
+    border-title-style: bold;
+}}
+
+#sync-preview-summary {{
+    height: auto;
+    margin-top: 1;
+    margin-bottom: 1;
+    color: {TEXT_MUTED};
+}}
+
+#sync-preview-list {{
+    height: auto;
+    min-height: 4;
+    margin-bottom: 1;
+    padding: 0 1;
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: round {INACTIVE_TASK_BORDER};
+}}
+
+#sync-preview-markdown {{
+    height: 1fr;
+    min-height: 10;
+    padding: 0 1;
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: round {INACTIVE_TASK_BORDER};
+}}
+
+#sync-preview-conflict-viewer {{
+    height: 1fr;
+    min-height: 14;
+    margin-top: 1;
+}}
+
+#sync-preview-conflict-local,
+#sync-preview-conflict-remote {{
+    width: 1fr;
+    height: 1fr;
+    min-height: 14;
+    padding: 0 1;
+    background: {HEADER_BG};
+    color: {TEXT_DEFAULT};
+    border: round {INACTIVE_TASK_BORDER};
+}}
+
+#sync-preview-conflict-local {{
+    margin-right: 1;
+}}
+
+#sync-preview-actions {{
+    margin-top: 1;
+    border-top: heavy {INACTIVE_TASK_BORDER};
+    padding-top: 1;
+    align-horizontal: right;
+}}
+
+#sync-preview-actions Button {{
     width: auto;
     min-width: 0;
     padding: 0 2;
