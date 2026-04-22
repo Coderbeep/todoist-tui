@@ -121,6 +121,7 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
             screen.query_one("#task-editor-description", TextArea).text = "  Updated details  "
             screen.query_one("#task-editor-labels", Input).value = "alpha, beta"
             screen.query_one("#task-editor-due", Input).value = "next friday"
+            screen.query_one("#task-editor-priority", Checkbox).value = True
             await pilot.press("ctrl+s")
             await pilot.pause()
 
@@ -129,6 +130,17 @@ class ScreenFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.result.description, "Updated details")
         self.assertEqual(app.result.labels, ["alpha", "beta"])
         self.assertEqual(app.result.due_string, "next friday")
+        self.assertTrue(app.result.is_priority)
+
+    async def test_task_editor_initializes_priority_checkbox_from_task(self) -> None:
+        task = make_task("task-1", "Urgent task", priority=4)
+        app = ModalHostApp(TaskEditorScreen(task, []))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            priority_input = app.screen.query_one("#task-editor-priority", Checkbox)
+
+            self.assertTrue(priority_input.value)
 
     async def test_task_editor_positions_all_cursors_at_end_without_auto_selection(self) -> None:
         task = make_task(

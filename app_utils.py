@@ -12,6 +12,29 @@ from app_types import LabelGroup
 
 
 T = TypeVar("T")
+TODOIST_PRIORITY_NORMAL = 1
+TODOIST_PRIORITY_FLAGGED = 4
+
+
+def normalize_todoist_priority(value: object) -> int:
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        return TODOIST_PRIORITY_NORMAL
+    return max(TODOIST_PRIORITY_NORMAL, min(TODOIST_PRIORITY_FLAGGED, priority))
+
+
+def task_has_priority(task: object) -> bool:
+    return normalize_todoist_priority(getattr(task, "priority", TODOIST_PRIORITY_NORMAL)) > TODOIST_PRIORITY_NORMAL
+
+
+def priority_sorted_tasks(tasks: Iterable[Task]) -> list[Task]:
+    return sorted(tasks, key=lambda task: not task_has_priority(task))
+
+
+def todoist_priority_level(value: object) -> int:
+    priority = normalize_todoist_priority(value)
+    return 5 - priority
 
 
 def flatten_pages(pages: Iterable[list[T]]) -> list[T]:
@@ -111,14 +134,14 @@ def build_label_groups(tasks: list[Task], labels: list[TodoistLabel]) -> list[La
             key="all",
             title="All Tasks",
             accent=ui.INACTIVE_TASK_BORDER,
-            tasks=list(tasks),
+            tasks=priority_sorted_tasks(tasks),
             help_text="Everything in your Inbox appears here, regardless of label.",
         ),
         LabelGroup(
             key="unlabeled",
             title="No Label",
             accent=ui.INACTIVE_TASK_BORDER,
-            tasks=unlabeled_tasks,
+            tasks=priority_sorted_tasks(unlabeled_tasks),
             help_text="Tasks without labels. Good for triage and cleanup.",
         ),
     ]
@@ -129,7 +152,7 @@ def build_label_groups(tasks: list[Task], labels: list[TodoistLabel]) -> list[La
                 key=f"label:{label.id}",
                 title=label.name,
                 accent=ui.COLOR_HEX_BY_NAME.get(label.color, ui.ACCENT_PRIMARY),
-                tasks=list(tasks_by_label.get(label.name.casefold(), [])),
+                tasks=priority_sorted_tasks(tasks_by_label.get(label.name.casefold(), [])),
                 help_text=(
                     f"Tasks tagged with @{label.name}. "
                     f"Label color: {humanize_color_name(label.color)}."

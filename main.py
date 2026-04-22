@@ -27,7 +27,16 @@ from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelFormData, LabelGroup, LabelMutationRequest, MutationResult, SelectionState, TaskFormData, TodoistSnapshot
-from app_utils import build_label_groups, compact_text, flatten_pages, format_error, task_window
+from app_utils import (
+    TODOIST_PRIORITY_FLAGGED,
+    TODOIST_PRIORITY_NORMAL,
+    build_label_groups,
+    compact_text,
+    flatten_pages,
+    format_error,
+    task_has_priority,
+    task_window,
+)
 from md_sync import (
     BIND,
     CONFLICT,
@@ -215,6 +224,9 @@ class TodoistGateway:
             kwargs["due_lang"] = self.due_lang
         return self.api.update_task(task_id, **kwargs)
 
+    def update_task_priority(self, task_id: str, priority: int) -> Task:
+        return self.api.update_task(task_id, priority=priority)
+
     def create_task_from_payload(self, inbox_project_id: str, payload: TaskPayload) -> Task:
         return self.api.add_task(
             project_id=inbox_project_id,
@@ -255,6 +267,7 @@ class TodoistGateway:
                 body=form.description,
                 labels=tuple(form.labels),
                 due=form.due_string,
+                priority=TODOIST_PRIORITY_FLAGGED if form.is_priority else TODOIST_PRIORITY_NORMAL,
             )
         )
 
@@ -263,6 +276,7 @@ class TodoistGateway:
             "content": payload.title,
             "description": payload.body,
             "labels": list(payload.labels),
+            "priority": payload.priority,
         }
         if payload.due:
             kwargs["due_string"] = payload.due
@@ -289,6 +303,7 @@ class TodoistKanbanApp(App[None]):
         Binding("down,j", "next_task", "Next", key_display="↓/j", priority=True),
         Binding("n", "new_task", "Add"),
         Binding("e,enter", "edit_task", "Edit", key_display="e/Enter"),
+        Binding("p", "toggle_task_priority", "Priority", key_display="P"),
         Binding("space", "complete_task", "Complete"),
         Binding("x", "delete_task", "Delete"),
         Binding("s", "show_sync_preview", "Sync"),
@@ -524,6 +539,14 @@ class TodoistKanbanApp(App[None]):
             return
         self.push_screen(TaskEditorScreen(task, self.labels), self._finish_edit_task)
 
+    def action_toggle_task_priority(self) -> None:
+        if not self._is_main_screen_active():
+            raise SkipAction()
+        task = self.selected_task
+        if self.busy or task is None:
+            return
+        self._toggle_task_priority(task.id, self.selected_group.key, task_has_priority(task))
+
     def action_complete_task(self) -> None:
         task = self.selected_task
         if self.busy or task is None:
@@ -605,6 +628,16 @@ class TodoistKanbanApp(App[None]):
             lambda: self.gateway.update_task(task, form),
             message="Task updated.",
             group_key=self._preferred_task_group_key(form.labels),
+        )
+
+    def _toggle_task_priority(self, task_id: str, group_key: str, currently_priority: bool) -> None:
+        next_priority = TODOIST_PRIORITY_NORMAL if currently_priority else TODOIST_PRIORITY_FLAGGED
+        message = "Task priority removed." if currently_priority else "Task priority added."
+        self._run_task_mutation(
+            "Updating task priority...",
+            lambda: self.gateway.update_task_priority(task_id, next_priority),
+            message=message,
+            group_key=group_key,
         )
 
     def _complete_task(self, task_id: str) -> None:
@@ -1659,6 +1692,7 @@ def _replica_from_action(action: SyncAction) -> TodoistTaskReplica:
                 "content": action.payload.title,
                 "description": action.payload.body,
                 "labels": list(action.payload.labels),
+                "priority": action.payload.priority,
                 "due": type("DueStub", (), {"string": action.payload.due, "date": action.payload.due})()
                 if action.payload.due is not None
                 else None,

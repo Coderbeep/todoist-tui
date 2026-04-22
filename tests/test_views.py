@@ -142,6 +142,7 @@ class ViewsTests(unittest.TestCase):
             description="Detailed description",
             labels=["alpha", "beta", "gamma", "delta"],
             due=make_due("2026-04-08", "next wednesday"),
+            priority=4,
         )
 
         panel = build_task_card(
@@ -163,10 +164,31 @@ class ViewsTests(unittest.TestCase):
         text = render_text(panel)
 
         self.assertEqual(panel.title, "ACTIVE")
+        self.assertEqual(panel.border_style, ui.ACTIVE_TASK_BORDER)
+        self.assertIn("⚑", text)
+        self.assertIn("Alpha task", text)
+        self.assertNotIn("⚑ Alpha task", text)
+        self.assertNotIn("P1", text)
         self.assertIn("next wednesday", text)
         self.assertIn("@alpha", text)
         self.assertIn("+1", text)
         self.assertIn("Detailed description", text)
+        self.assertNotIn("task-1", text)
+
+    def test_build_task_card_marks_unselected_priority_task_in_frame(self) -> None:
+        panel = build_task_card(
+            make_task("task-1", "Alpha task", priority=4),
+            selected=False,
+            accent=ui.ACCENT_PRIMARY,
+            label_name_colors={},
+            selected_text_style="bold white",
+            body_text_style="white",
+            subtle_text_style="grey70",
+            border_style="grey50",
+        )
+
+        self.assertEqual(panel.title, "⚑ PRIORITY")
+        self.assertEqual(panel.border_style, ui.ACTIVE_TASK_BORDER)
 
     def test_build_detail_panel_without_task_shows_empty_state(self) -> None:
         text = render_text(
@@ -202,6 +224,7 @@ class ViewsTests(unittest.TestCase):
 
         self.assertIn("INSPECTOR", text)
         self.assertIn("Alpha task", text)
+        self.assertIn("none", text)
         self.assertIn("next wednesday", text)
         self.assertIn("alpha, beta", text)
         self.assertIn("DESCRIPTION", text)

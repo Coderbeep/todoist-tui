@@ -20,6 +20,7 @@ def make_task(
     description: str = "",
     labels: list[str] | None = None,
     due=None,
+    priority: int = 1,
     order: int = 1,
 ):
     return SimpleNamespace(
@@ -27,6 +28,7 @@ def make_task(
         content=content,
         description=description,
         labels=labels or [],
+        priority=priority,
         due=due,
         order=order,
     )

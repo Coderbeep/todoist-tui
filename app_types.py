@@ -19,6 +19,7 @@ class TaskFormData:
     description: str
     labels: list[str]
     due_string: str | None
+    is_priority: bool = False
 
 
 @dataclass(slots=True)

@@ -69,11 +69,13 @@ class MainHelpersTests(unittest.TestCase):
                 description="Details",
                 labels=["alpha"],
                 due_string="tomorrow",
+                is_priority=True,
             ),
         )
 
         self.assertEqual(payload["due_string"], "tomorrow")
         self.assertEqual(payload["due_lang"], "en")
+        self.assertEqual(payload["priority"], 4)
 
     def test_gateway_update_task_clears_due_when_due_string_removed(self) -> None:
         class StubApi:
@@ -103,6 +105,39 @@ class MainHelpersTests(unittest.TestCase):
         self.assertEqual(result["task_id"], "task-1")
         self.assertEqual(gateway.api.calls[0][1]["due_string"], "no due date")
         self.assertEqual(gateway.api.calls[0][1]["due_lang"], "en")
+        self.assertEqual(gateway.api.calls[0][1]["priority"], 1)
+
+    def test_gateway_update_task_priority_sends_priority_only(self) -> None:
+        class StubApi:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def update_task(self, task_id: str, **payload):
+                self.calls.append((task_id, payload))
+                return {"task_id": task_id, "payload": payload}
+
+        gateway = TodoistGateway.__new__(TodoistGateway)
+        gateway.api = StubApi()
+
+        result = TodoistGateway.update_task_priority(gateway, "task-1", 4)
+
+        self.assertEqual(result["task_id"], "task-1")
+        self.assertEqual(gateway.api.calls, [("task-1", {"priority": 4})])
+
+    def test_toggle_task_priority_queues_priority_only_mutation(self) -> None:
+        app = TodoistKanbanApp.__new__(TodoistKanbanApp)
+        app.gateway = SimpleNamespace(update_task_priority=Mock(return_value=make_task("task-1", "Alpha", priority=4)))
+        app._run_task_mutation = Mock()
+
+        TodoistKanbanApp._toggle_task_priority(app, "task-1", "all", False)
+
+        app._run_task_mutation.assert_called_once()
+        status_message, operation = app._run_task_mutation.call_args.args[:2]
+        self.assertEqual(status_message, "Updating task priority...")
+        self.assertEqual(operation().id, "task-1")
+        app.gateway.update_task_priority.assert_called_once_with("task-1", 4)
+        self.assertEqual(app._run_task_mutation.call_args.kwargs["message"], "Task priority added.")
+        self.assertEqual(app._run_task_mutation.call_args.kwargs["group_key"], "all")
 
     def test_finish_label_request_dispatches_expected_mutation_runner(self) -> None:
         app = TodoistKanbanApp.__new__(TodoistKanbanApp)
@@ -692,6 +727,18 @@ class MainAppFlowTests(unittest.IsolatedAsyncioTestCase):
             before = app.refresh_requests
             await pilot.press("r")
             self.assertGreater(app.refresh_requests, before)
+
+    async def test_priority_binding_toggles_selected_task_priority(self) -> None:
+        app = SnapshotPilotApp(make_snapshot(tasks=[make_task("task-1", "Alpha", priority=1)], labels=[]))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._toggle_task_priority = Mock()
+
+            await pilot.press("p")
+            await pilot.pause()
+
+            app._toggle_task_priority.assert_called_once_with("task-1", "all", False)
 
     async def test_label_manager_action_opens_label_screen(self) -> None:
         app = SnapshotPilotApp(

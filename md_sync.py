@@ -33,6 +33,14 @@ def _normalize_due(value: str | None) -> str | None:
     return normalized or None
 
 
+def _normalize_priority(value: object) -> int:
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(4, priority))
+
+
 def _normalize_labels(labels: Iterable[str]) -> tuple[str, ...]:
     deduped: dict[str, str] = {}
     for label in labels:
@@ -43,8 +51,11 @@ def _normalize_labels(labels: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted(deduped.values(), key=str.casefold))
 
 
-def _fingerprint_payload(payload: "TaskPayload") -> str:
-    encoded = json.dumps(payload.normalized(), ensure_ascii=True, sort_keys=True).encode("utf-8")
+def _fingerprint_payload(payload: "TaskPayload", *, include_priority: bool = True) -> str:
+    normalized = payload.normalized()
+    if not include_priority:
+        normalized.pop("priority", None)
+    encoded = json.dumps(normalized, ensure_ascii=True, sort_keys=True).encode("utf-8")
     return sha256(encoded).hexdigest()
 
 
@@ -54,6 +65,7 @@ class TaskPayload:
     body: str = ""
     labels: tuple[str, ...] = ()
     due: str | None = None
+    priority: int = 1
 
     def normalized(self) -> dict[str, object]:
         return {
@@ -61,11 +73,16 @@ class TaskPayload:
             "body": _normalize_text(self.body),
             "labels": list(_normalize_labels(self.labels)),
             "due": _normalize_due(self.due),
+            "priority": _normalize_priority(self.priority),
         }
 
     @property
     def fingerprint(self) -> str:
         return _fingerprint_payload(self)
+
+    @property
+    def legacy_fingerprint(self) -> str:
+        return _fingerprint_payload(self, include_priority=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +107,9 @@ class MarkdownNote:
             data["todoist_id"] = self.todoist_id
         if self.payload.due is not None:
             data["due"] = self.payload.due
+        priority = _normalize_priority(self.payload.priority)
+        if priority != 1:
+            data["priority"] = priority
         return data
 
 
@@ -332,8 +352,14 @@ class SyncPlanner:
                     )
                 return actions, conflicts
 
-            note_changed = note.fingerprint != record.markdown_fingerprint
-            task_changed = task.fingerprint != record.todoist_fingerprint
+            note_changed = not self._payload_matches_record(
+                note.payload,
+                record.markdown_fingerprint,
+            )
+            task_changed = not self._payload_matches_record(
+                task.payload,
+                record.todoist_fingerprint,
+            )
 
             if note_changed and not task_changed:
                 actions.append(
@@ -390,7 +416,10 @@ class SyncPlanner:
                 )
                 return actions, conflicts
 
-            note_changed = note.fingerprint != record.markdown_fingerprint
+            note_changed = not self._payload_matches_record(
+                note.payload,
+                record.markdown_fingerprint,
+            )
             if note_changed:
                 conflicts.append(
                     SyncAction(
@@ -428,7 +457,10 @@ class SyncPlanner:
                 )
                 return actions, conflicts
 
-            task_changed = task.fingerprint != record.todoist_fingerprint
+            task_changed = not self._payload_matches_record(
+                task.payload,
+                record.todoist_fingerprint,
+            )
             if task_changed:
                 conflicts.append(
                     SyncAction(
@@ -461,6 +493,14 @@ class SyncPlanner:
             raise ValueError(f"Duplicate {label}: {key}")
         target[key] = value
 
+    @staticmethod
+    def _payload_matches_record(payload: TaskPayload, record_fingerprint: str | None) -> bool:
+        if record_fingerprint is None:
+            return False
+        if payload.fingerprint == record_fingerprint:
+            return True
+        return _normalize_priority(payload.priority) == 1 and payload.legacy_fingerprint == record_fingerprint
+
 
 def default_sync_state_path(notes_root: Path) -> Path:
     return notes_root / SYNC_STATE_FILENAME
@@ -483,6 +523,7 @@ def todoist_task_to_replica(task: object) -> TodoistTaskReplica:
             body=str(getattr(task, "description", "") or ""),
             labels=tuple(getattr(task, "labels", None) or ()),
             due=str(due_value) if due_value is not None else None,
+            priority=_normalize_priority(getattr(task, "priority", 1)),
         ),
         updated_at=str(updated_at) if updated_at is not None else None,
     )
@@ -502,6 +543,7 @@ def read_markdown_note(path: Path) -> MarkdownNote:
         labels = ()
 
     due = frontmatter.get("due")
+    priority = frontmatter.get("priority", 1)
     sync_id = frontmatter.get("sync_id")
     todoist_id = frontmatter.get("todoist_id")
 
@@ -512,6 +554,7 @@ def read_markdown_note(path: Path) -> MarkdownNote:
             body=note_body,
             labels=labels,
             due=str(due).strip() if due not in (None, "") else None,
+            priority=_normalize_priority(priority),
         ),
         sync_id=str(sync_id).strip() if sync_id not in (None, "") else None,
         todoist_id=str(todoist_id).strip() if todoist_id not in (None, "") else None,
@@ -583,7 +626,7 @@ def write_markdown_note(note: MarkdownNote) -> None:
 def render_markdown_note(note: MarkdownNote) -> str:
     frontmatter = note.frontmatter()
     lines = ["---"]
-    for key in ("sync_version", "sync_id", "todoist_id", "labels", "due"):
+    for key in ("sync_version", "sync_id", "todoist_id", "labels", "due", "priority"):
         if key not in frontmatter:
             continue
         value = frontmatter[key]

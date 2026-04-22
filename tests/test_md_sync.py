@@ -40,13 +40,14 @@ def make_note(
     body: str = "",
     labels: tuple[str, ...] = (),
     due: str | None = None,
+    priority: int = 1,
     sync_id: str | None = None,
     todoist_id: str | None = None,
     path: Path = NOTE_PATH,
 ) -> MarkdownNote:
     return MarkdownNote(
         path=path,
-        payload=TaskPayload(title=title, body=body, labels=labels, due=due),
+        payload=TaskPayload(title=title, body=body, labels=labels, due=due, priority=priority),
         sync_id=sync_id,
         todoist_id=todoist_id,
     )
@@ -58,11 +59,12 @@ def make_task(
     body: str = "",
     labels: tuple[str, ...] = (),
     due: str | None = None,
+    priority: int = 1,
     task_id: str = "todoist-1",
 ) -> TodoistTaskReplica:
     return TodoistTaskReplica(
         task_id=task_id,
-        payload=TaskPayload(title=title, body=body, labels=labels, due=due),
+        payload=TaskPayload(title=title, body=body, labels=labels, due=due, priority=priority),
     )
 
 
@@ -138,6 +140,56 @@ class MarkdownTodoistSyncTests(unittest.TestCase):
         action = self.assert_single_action(plan, UPDATE_MARKDOWN)
         self.assertEqual(action.markdown_path, NOTE_PATH)
         self.assertEqual(action.payload.title, "Remote revised")
+
+    def test_case_legacy_record_with_unchanged_normal_priority_emits_no_operation(self) -> None:
+        note = make_note(sync_id="sync-1", todoist_id="todoist-1")
+        task = make_task()
+        record = SyncRecord(
+            sync_id="sync-1",
+            markdown_path=str(NOTE_PATH),
+            todoist_id="todoist-1",
+            markdown_fingerprint=note.payload.legacy_fingerprint,
+            todoist_fingerprint=task.payload.legacy_fingerprint,
+        )
+
+        plan = SyncPlanner().plan([note], [task], [record])
+
+        self.assertFalse(plan.actions)
+        self.assertFalse(plan.conflicts)
+
+    def test_case_priority_toggle_with_legacy_record_updates_markdown(self) -> None:
+        note = make_note(sync_id="sync-1", todoist_id="todoist-1")
+        task = make_task(priority=4)
+        record = SyncRecord(
+            sync_id="sync-1",
+            markdown_path=str(NOTE_PATH),
+            todoist_id="todoist-1",
+            markdown_fingerprint=note.payload.legacy_fingerprint,
+            todoist_fingerprint=make_task().payload.legacy_fingerprint,
+        )
+
+        plan = SyncPlanner().plan([note], [task], [record])
+
+        action = self.assert_single_action(plan, UPDATE_MARKDOWN)
+        self.assertEqual(action.markdown_path, NOTE_PATH)
+        self.assertEqual(action.payload.priority, 4)
+
+    def test_case_local_priority_toggle_with_legacy_record_updates_todoist(self) -> None:
+        note = make_note(sync_id="sync-1", todoist_id="todoist-1", priority=4)
+        task = make_task()
+        record = SyncRecord(
+            sync_id="sync-1",
+            markdown_path=str(NOTE_PATH),
+            todoist_id="todoist-1",
+            markdown_fingerprint=make_note().payload.legacy_fingerprint,
+            todoist_fingerprint=task.payload.legacy_fingerprint,
+        )
+
+        plan = SyncPlanner().plan([note], [task], [record])
+
+        action = self.assert_single_action(plan, UPDATE_TODOIST)
+        self.assertEqual(action.todoist_id, "todoist-1")
+        self.assertEqual(action.payload.priority, 4)
 
     def test_case_both_replicas_changed_to_same_payload_emits_no_operation(self) -> None:
         record = SyncRecord.capture("sync-1", markdown=make_note(), todoist=make_task())
@@ -263,6 +315,7 @@ class MarkdownTodoistSyncTests(unittest.TestCase):
         note = make_note(
             labels=("work", "Home", "work"),
             due="friday",
+            priority=4,
             sync_id="sync-1",
             todoist_id="todoist-1",
         )
@@ -274,6 +327,7 @@ class MarkdownTodoistSyncTests(unittest.TestCase):
         self.assertEqual(frontmatter["todoist_id"], "todoist-1")
         self.assertEqual(frontmatter["labels"], ["Home", "work"])
         self.assertEqual(frontmatter["due"], "friday")
+        self.assertEqual(frontmatter["priority"], 4)
 
     def test_case_payload_fingerprint_normalizes_whitespace_and_label_order(self) -> None:
         left = TaskPayload(
@@ -281,12 +335,14 @@ class MarkdownTodoistSyncTests(unittest.TestCase):
             body="One\r\nTwo\n",
             labels=("work", "Home", "work"),
             due=" friday ",
+            priority=4,
         )
         right = TaskPayload(
             title="Alpha",
             body="One\nTwo",
             labels=("Home", "work"),
             due="friday",
+            priority=4,
         )
 
         self.assertEqual(left.fingerprint, right.fingerprint)
@@ -317,6 +373,7 @@ class MarkdownTodoistSyncTests(unittest.TestCase):
                 "  - work\n"
                 "  - Home\n"
                 "due: friday\n"
+                "priority: 4\n"
                 "---\n"
                 "# Ship feature\n\n"
                 "Line one\n"
@@ -335,6 +392,7 @@ class MarkdownTodoistSyncTests(unittest.TestCase):
         self.assertEqual(note.payload.body, "Line one\nLine two")
         self.assertEqual(note.payload.labels, ("work", "Home"))
         self.assertEqual(note.payload.due, "friday")
+        self.assertEqual(note.payload.priority, 4)
 
     def test_case_build_sync_preview_loads_notes_and_state_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

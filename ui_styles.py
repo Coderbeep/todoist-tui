@@ -450,6 +450,10 @@ TASK_EDITOR_SCREEN_CSS = (
     border: tall {ACCENT_PRIMARY};
 }}
 
+#task-editor-priority {{
+    width: 1fr;
+}}
+
 #task-editor-actions {{
     margin-top: 2;
     border-top: heavy {INACTIVE_TASK_BORDER};

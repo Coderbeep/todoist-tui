@@ -12,7 +12,10 @@ from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelGroup
-from app_utils import compact_multiline_text, humanize_color_name, task_window
+from app_utils import compact_multiline_text, humanize_color_name, normalize_todoist_priority, task_window
+
+
+PRIORITY_FLAG = "⚑"
 
 
 def group_label(group: LabelGroup) -> str:
@@ -165,11 +168,12 @@ def build_task_card(
     subtle_text_style: str,
     border_style: str,
 ) -> RenderableType:
-    card_border = ui.ACTIVE_TASK_BORDER if selected else ui.INACTIVE_TASK_BORDER
-    card_title = "ACTIVE" if selected else "TASK"
+    priority = normalize_todoist_priority(getattr(task, "priority", 1))
+    is_priority = priority > 1
+    card_border = ui.ACTIVE_TASK_BORDER if selected or is_priority else ui.INACTIVE_TASK_BORDER
+    card_title = "ACTIVE" if selected else f"{PRIORITY_FLAG} PRIORITY" if is_priority else "TASK"
     card_style = f"on {ui.ACTIVE_ROW_BG}" if selected else ""
     meta_style = ui.ACTIVE_TASK_BORDER if selected else border_style
-    task_id_style = border_style
 
     meta = Text(justify="right")
     if task.due:
@@ -190,17 +194,16 @@ def build_task_card(
     summary = Table.grid(expand=True)
     summary.add_column(ratio=1)
     summary.add_column(no_wrap=True, justify="right")
-    summary.add_row(
-        Text(task.content, style=selected_text_style if selected else body_text_style),
-        Text(task.id, style=task_id_style),
-    )
+    title = Text()
+    title.append(task.content, style=selected_text_style if selected else body_text_style)
+    priority_marker = Text(PRIORITY_FLAG, style=f"bold {ui.ACCENT_SOFT}") if is_priority else Text("")
+    summary.add_row(title, priority_marker)
     if task.description:
         summary.add_row(
             Text(compact_multiline_text(task.description), style=subtle_text_style),
-            meta,
+            Text(""),
         )
-    else:
-        summary.add_row(Text(""), meta)
+    summary.add_row(Text(""), meta)
 
     body_items: list[RenderableType] = [summary]
 
@@ -231,6 +234,12 @@ def build_detail_panel(
     meta.add_column(ratio=1)
     meta.add_row("id", task.id)
     meta.add_row("group", group.title)
+    meta.add_row(
+        "priority",
+        f"{PRIORITY_FLAG} flagged"
+        if normalize_todoist_priority(getattr(task, "priority", 1)) > 1
+        else "none",
+    )
     meta.add_row("due", task.due.string if task.due else "none")
     meta.add_row("labels", ", ".join(task.labels or []) or "none")
 

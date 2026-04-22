@@ -13,7 +13,7 @@ from todoist_api_python.models import Task
 
 import ui_styles as ui
 from app_types import LabelFormData, LabelMutationRequest, TaskFormData
-from app_utils import parse_label_names
+from app_utils import parse_label_names, task_has_priority
 from md_sync import MarkdownNote, SyncAction, SyncPreview, SyncResolution, TodoistTaskReplica, summarize_sync_preview
 from views import build_label_manager_rows
 
@@ -152,12 +152,21 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
         )
         due_input.border_title = " Due "
 
+        priority_input = Checkbox(
+            "Priority",
+            value=task_has_priority(self.todoist_task) if self.todoist_task is not None else False,
+            id="task-editor-priority",
+            compact=True,
+        )
+        priority_input.border_title = " Flag "
+
         shell = Container(
             content_input,
             description_input,
             labels_input,
             Static(id="task-editor-label-hint"),
             due_input,
+            priority_input,
             Horizontal(
                 Button(Text("Cancel [Esc]"), id="task-editor-cancel", compact=True),
                 Button(Text("Save [Ctrl+S]"), id="task-editor-save", variant="success", compact=True),
@@ -201,6 +210,7 @@ class TaskEditorScreen(ModalScreen[TaskFormData | None]):
                 description=self.query_one("#task-editor-description", TextArea).text.strip(),
                 labels=parse_label_names(self.query_one("#task-editor-labels", Input).value),
                 due_string=self.query_one("#task-editor-due", Input).value.strip() or None,
+                is_priority=self.query_one("#task-editor-priority", Checkbox).value,
             )
         )
 
