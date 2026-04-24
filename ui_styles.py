@@ -173,6 +173,13 @@ Button.group-chip.is-active {{
     border-subtitle-color: {TEXT_MUTED};
 }}
 
+#task-metrics {{
+    width: 1fr;
+    height: auto;
+    margin-bottom: 1;
+    background: transparent;
+}}
+
 #task-list {{
     width: 1fr;
     height: auto;

@@ -42,6 +42,39 @@ def build_workspace_header(inbox_name: str, task_count: int, label_count: int, *
     return header
 
 
+def _task_due_date(task: Task) -> date | None:
+    due_value = getattr(getattr(task, "due", None), "date", None)
+    if not isinstance(due_value, str):
+        return None
+    try:
+        return datetime.strptime(due_value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def build_task_metrics(tasks: list[Task]) -> RenderableType:
+    today = date.today()
+    overdue_count = sum(1 for task in tasks if (due_date := _task_due_date(task)) is not None and due_date < today)
+    flagged_count = sum(1 for task in tasks if normalize_todoist_priority(getattr(task, "priority", 1)) > 1)
+
+    metrics = Table.grid(expand=True)
+    for _ in range(4):
+        metrics.add_column(justify="center", ratio=1)
+    metrics.add_row(
+        Text(str(len(tasks)), style=f"bold {ui.TEXT_PRIMARY}"),
+        Text(str(max(0, len(tasks) - overdue_count)), style=f"bold {ui.ACCENT_SECONDARY}"),
+        Text(str(flagged_count), style=f"bold {ui.ACCENT_SOFT}"),
+        Text(str(overdue_count), style=f"bold {ui.ACTIVE_TASK_BORDER}"),
+    )
+    metrics.add_row(
+        Text("Total", style=ui.TEXT_MUTED),
+        Text("Active", style=ui.ACCENT_SECONDARY),
+        Text("Flagged", style=ui.ACCENT_SOFT),
+        Text("Overdue", style=ui.ACTIVE_TASK_BORDER),
+    )
+    return Panel(metrics, border_style=ui.INACTIVE_TASK_BORDER)
+
+
 def build_calendar_widget(task: Task | None) -> RenderableType:
     today = date.today()
     display_date = today

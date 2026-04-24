@@ -68,7 +68,7 @@ from md_sync import (
     MarkdownNote,
 )
 from screens import ConfirmScreen, LabelManagerScreen, SyncPreviewScreen, TaskEditorScreen
-from views import build_calendar_widget, build_detail_markdown, build_detail_panel, build_status_bar, build_task_card, build_task_panel, build_workspace_header, group_label
+from views import build_calendar_widget, build_detail_markdown, build_detail_panel, build_status_bar, build_task_card, build_task_metrics, build_task_panel, build_workspace_header, group_label
 
 
 class AppFooter(BaseFooter):
@@ -369,6 +369,7 @@ class TodoistKanbanApp(App[None]):
                 with ActivePaneScroll("groups", id="group-rail"):
                     yield Vertical(id="group-strip")
                 with ActivePaneScroll("tasks", id="task-panel"):
+                    yield Static(id="task-metrics")
                     yield Vertical(id="task-list")
                 with Vertical(id="detail-stack"):
                     with ActivePaneScroll("inspector", id="detail-panel"):
@@ -1300,6 +1301,7 @@ class TodoistKanbanApp(App[None]):
         self._clamp_selection()
         selected_group = self.selected_group
         selected_task = self.selected_task
+        self.query_one("#task-metrics", Static).update(build_task_metrics(selected_group.tasks))
         self._refresh_task_list()
         detail_key = (selected_task.id if selected_task is not None else None, selected_group.key)
         if detail_key != self._last_detail_panel_key:

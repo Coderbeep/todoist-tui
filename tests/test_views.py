@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 from rich.panel import Panel
 from rich.text import Text
@@ -14,6 +14,7 @@ from views import (
     build_label_manager_rows,
     build_status_bar,
     build_task_card,
+    build_task_metrics,
     build_task_panel,
     build_workspace_header,
     group_label,
@@ -52,6 +53,23 @@ class ViewsTests(unittest.TestCase):
     def test_build_calendar_widget_falls_back_to_current_month_for_invalid_due(self) -> None:
         panel = build_calendar_widget(make_task("task-1", "Alpha", due=make_due("not-a-date", "someday")))
         self.assertEqual(panel.title, date.today().strftime("%B %Y").upper())
+
+    def test_build_task_metrics_summarizes_task_states(self) -> None:
+        today = date.today()
+        text = render_text(
+            build_task_metrics(
+                [
+                    make_task("task-1", "Alpha", priority=4),
+                    make_task("task-2", "Beta", due=make_due((today - timedelta(days=1)).isoformat(), "yesterday")),
+                    make_task("task-3", "Gamma", due=make_due(today.isoformat(), "today")),
+                ]
+            )
+        )
+
+        self.assertIn("Total", text)
+        self.assertIn("Active", text)
+        self.assertIn("Flagged", text)
+        self.assertIn("Overdue", text)
 
     def test_build_label_manager_rows_shows_empty_state(self) -> None:
         text = render_text(build_label_manager_rows([], 0))
